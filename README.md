@@ -1,14 +1,10 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/indrasol_logo_high_res.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/indrasol_logo_high_res.png">
-    <img src="assets/indrasol_logo_high_res.png" width="360" alt="IndraTrace by Indrasol">
-  </picture>
+  <img src="https://raw.githubusercontent.com/indrasol/indratrace-python-sdk/main/assets/indrasol_logo_high_res.png" width="360" alt="IndraTrace by Indrasol">
 </p>
 
 <h1 align="center">
   IndraTrace SDK
-  <img src="assets/indrabot-mascot.png" width="56" align="center" alt="Indrabot">
+  <img src="https://raw.githubusercontent.com/indrasol/indratrace-python-sdk/main/assets/indrabot-mascot.png" width="56" align="center" alt="Indrabot">
 </h1>
 
 <p align="center">
@@ -21,9 +17,6 @@
 OpenTelemetry-native observability SDK for the IndraTrace platform — one-line
 instrumentation for web apps and AI agents: traces, logs, metrics, and
 model-call token usage.
-
-> **Meet Indrabot** 🤖 — the little mascot up top. It rides along while
-> IndraTrace watches your traces so you don't have to.
 
 ```bash
 pip install indratrace

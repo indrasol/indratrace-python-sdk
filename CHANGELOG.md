@@ -8,6 +8,14 @@ PyPI versions are immutable — fixes ship as new versions, never a re-upload.
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-07-10
+
+### Fixed
+
+- README images (logo banner, mascot) now use absolute GitHub raw URLs so they
+  render on the PyPI project page, not just on GitHub. Removed the mascot
+  intro blockquote.
+
 ## [0.4.0] — 2026-07-10
 
 **Public launch release**: debug diagnostics, Indrasol branding, and the standard
