@@ -1,10 +1,6 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/indrasol/indratrace-python-sdk/main/assets/indrasol_logo_high_res.png" width="360" alt="IndraTrace by Indrasol">
-</p>
-
 <h1 align="center">
+  <img src="https://raw.githubusercontent.com/indrasol/indratrace-python-sdk/main/assets/indrabot-mascot.png" width="64" align="center" alt="Indrabot">
   IndraTrace SDK
-  <img src="https://raw.githubusercontent.com/indrasol/indratrace-python-sdk/main/assets/indrabot-mascot.png" width="56" align="center" alt="Indrabot">
 </h1>
 
 <p align="center">

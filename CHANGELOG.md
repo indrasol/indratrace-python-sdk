@@ -8,6 +8,13 @@ PyPI versions are immutable — fixes ship as new versions, never a re-upload.
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-07-10
+
+### Changed
+
+- README header simplified: mascot now sits left of the title; Indrasol logo
+  banner removed.
+
 ## [0.4.1] — 2026-07-10
 
 ### Fixed
