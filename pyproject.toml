@@ -1,0 +1,98 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "indratrace"
+dynamic = ["version"]
+description = "OpenTelemetry-native observability SDK for the IndraTrace platform — one-line traces, logs, metrics, and model-call token usage for web apps and AI agents."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+# 3.9 is end-of-life; the SDK supports maintained interpreters only.
+requires-python = ">=3.10"
+authors = [{ name = "Indrasol" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+]
+# OTel only (ADR 0003). Provider instrumentation ships as optional extras.
+dependencies = [
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
+]
+
+[project.optional-dependencies]
+fastapi = ["opentelemetry-instrumentation-fastapi"]
+# GenAI capture via OpenLLMetry instrumentors (ADR 0005), optional so core stays
+# OTel-only (ADR 0003). Floors are recent enough to track today's provider SDKs
+# (Anthropic messages/streaming, OpenAI v1 client with usage in streamed chunks).
+anthropic = ["opentelemetry-instrumentation-anthropic>=0.40.0"]
+openai = ["opentelemetry-instrumentation-openai>=0.40.0"]
+gemini = ["opentelemetry-instrumentation-google-generativeai>=0.40.0"]
+bedrock = ["opentelemetry-instrumentation-bedrock>=0.40.0"]
+# Claude Agent SDK auto-instrumentation (ADR 0008): the differentiating feature.
+# Floor is the version whose public surface Phase 1 verified against; the wrapper
+# only touches public names, so it degrades to a silent skip if a needed name
+# ever disappears (fail-silent) rather than pinning an upper bound.
+claude-agent-sdk = ["claude-agent-sdk>=0.2.116"]
+dev = [
+    "pytest",
+    "ruff",
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    # Provider SDKs are dev-only: the GenAI unit tests need them importable so
+    # the instrumentors can patch them (Anthropic/OpenAI mock the transport and
+    # dump attributes; Gemini/Bedrock assert instrument/uninstrument wiring —
+    # both instrumentors import their provider SDK at module load). They are NOT
+    # runtime deps of the SDK — the provider extras pull only the instrumentors
+    # (ADR 0003/0005).
+    "anthropic>=0.40",
+    "openai>=1.40",
+    "google-genai>=1.0",
+    "boto3>=1.34",
+    # The Agent SDK unit tests drive the wrapped entrypoints with mocked
+    # messages (no CLI subprocess, no network) — the package must be importable.
+    "claude-agent-sdk>=0.2.116",
+]
+
+[project.urls]
+Homepage = "https://indrasol.com"
+Repository = "https://github.com/indrasol/indratrace-python-sdk"
+Changelog = "https://github.com/indrasol/indratrace-python-sdk/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+# Ship the Apache-2.0 text in both the sdist and the wheel metadata. This is
+# also setuptools' default glob, but pinning it makes sdist inclusion explicit
+# and independent of the setuptools version's default behavior.
+license-files = ["LICENSE"]
+
+[tool.setuptools.dynamic]
+version = { attr = "indratrace.version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+indratrace = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: needs the dev harness up (docker compose -f dev/docker-compose.yml up -d)",
+    "genai: needs ANTHROPIC_API_KEY and makes a real (tiny) provider call; auto-skips otherwise",
+]
+
+[tool.ruff]
+src = ["src"]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "BLE"]

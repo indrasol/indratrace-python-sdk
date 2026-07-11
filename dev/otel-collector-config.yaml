@@ -1,0 +1,57 @@
+# Dev harness collector config (ADR 0004).
+# Dumb OTLP receiver -> ClickHouse. No auth, no redaction, no sampling:
+# that policy belongs to the real platform, not here.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+exporters:
+  clickhouse:
+    # No `?database=` in the DSN: 24.8 rejects it as an unknown connection
+    # setting during CREATE DATABASE. The `database` field below does the job.
+    endpoint: tcp://clickhouse:9000
+    database: otel
+    # Matches CLICKHOUSE_USER/PASSWORD in docker-compose.yml. The image confines
+    # the `default` user to loopback, so the collector needs its own user.
+    username: otel
+    password: otel
+    create_schema: true
+    ttl: 24h
+    timeout: 10s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 10s
+      max_elapsed_time: 60s
+
+  # Makes telemetry visible in `docker compose logs otel-collector`.
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [clickhouse, debug]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [clickhouse, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [clickhouse, debug]

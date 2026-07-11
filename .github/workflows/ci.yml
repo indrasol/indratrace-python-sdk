@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (a new push to a PR/branch).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install ruff
+      - run: ruff check .
+
+  unit:
+    name: unit (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev,fastapi,anthropic,openai,gemini,bedrock,claude-agent-sdk]"
+      # genai is a paid live-key ritual (stays local); integration needs the
+      # harness (its own job below). This job is the pure-offline suite.
+      - run: pytest -m "not integration and not genai" -q
+
+  integration:
+    name: integration (harness)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev,fastapi]"
+
+      - name: Start dev harness
+        run: docker compose -f dev/docker-compose.yml up -d --wait
+
+      # `--wait` only blocks on containers with a healthcheck. ClickHouse has
+      # one; the collector does not, so poll its OTLP/HTTP port ourselves before
+      # the tests import (they skip if it isn't listening at import time).
+      - name: Wait for the collector's OTLP endpoint
+        run: |
+          for i in $(seq 1 30); do
+            # An empty POST 400s on a live server; a successful *connection*
+            # (curl exit 0, no -f) means it's listening — the 4xx is expected.
+            if curl -s -o /dev/null --data-binary '' \
+                http://localhost:4318/v1/traces; then
+              echo "collector is listening"; exit 0
+            fi
+            echo "waiting for collector ($i)…"; sleep 2
+          done
+          echo "collector never came up"; docker compose -f dev/docker-compose.yml logs; exit 1
+
+      - name: Run integration tests
+        run: pytest -m integration -q
+
+      - name: Tear down harness
+        if: always()
+        run: docker compose -f dev/docker-compose.yml down -v

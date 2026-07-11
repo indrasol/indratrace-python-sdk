@@ -1,0 +1,3 @@
+# Deps for dev/send_test_span.py only. Not the SDK's runtime deps.
+opentelemetry-sdk==1.43.0
+opentelemetry-exporter-otlp-proto-http==1.43.0
