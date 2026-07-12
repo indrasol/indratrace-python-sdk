@@ -38,7 +38,7 @@ from fastapi import FastAPI
 from indratrace import init_observability, trace_agent, trace_tool
 
 # Once, at app startup.
-init_observability(product="my-app", env="prod", ingest_key="...")
+init_observability(product="my-app", env="prod", api_key="...")
 
 app = FastAPI()  # every HTTP request becomes a span, automatically
 
@@ -74,7 +74,7 @@ from fastapi import FastAPI
 
 from indratrace import init_observability
 
-init_observability(product="orders-api", env="prod", ingest_key="...")
+init_observability(product="orders-api", env="prod", api_key="...")
 
 app = FastAPI()
 
@@ -136,7 +136,7 @@ from claude_agent_sdk import query, ClaudeAgentOptions
 
 from indratrace import init_observability
 
-init_observability(product="my-agent", ingest_key="...")   # once, at startup
+init_observability(product="my-agent", api_key="...")   # once, at startup
 
 # No decorators. This whole run is traced — agent → turns → tools → tokens.
 async for message in query(prompt="Summarize today's incidents and file a ticket"):
@@ -166,7 +166,7 @@ import anthropic
 
 from indratrace import init_observability, trace_agent, trace_tool
 
-init_observability(product="my-app", ingest_key="...")
+init_observability(product="my-app", api_key="...")
 client = anthropic.Anthropic()
 
 
@@ -213,7 +213,7 @@ want to see exactly what was sent and returned (the usual case in dev and
 staging, off in production):
 
 ```python
-init_observability(product="my-app", ingest_key="...", capture_content=True)
+init_observability(product="my-app", api_key="...", capture_content=True)
 ```
 
 Or set `INDRATRACE_CAPTURE_CONTENT=true` in the environment (an explicit
@@ -291,8 +291,8 @@ init_observability(product="my-app", endpoint="http://otel-collector:4318")
 export INDRATRACE_ENDPOINT="http://localhost:4318"   # e.g. a local Jaeger all-in-one
 ```
 
-The `x-indratrace-key` header is only sent when you set a key (`ingest_key=` /
-`INDRATRACE_KEY`), which the hosted IndraTrace platform uses to authenticate
+The `x-indratrace-key` header is only sent when you set a key (`api_key=` /
+`INDRATRACE_API_KEY`), which the hosted IndraTrace platform uses to authenticate
 ingest. Your own collector doesn't need it — leave it unset.
 
 ## Configuration
@@ -303,10 +303,14 @@ Resolution order is **explicit arg > env var > default**:
 |---|---|---|
 | `product` | `INDRATRACE_PRODUCT` | *required* — raises/warns if unset |
 | `env` | `INDRATRACE_ENV` | `dev` |
-| `ingest_key` | `INDRATRACE_KEY` | *none* (no auth header sent) |
+| `api_key` | `INDRATRACE_API_KEY` | *none* (no auth header sent) |
 | `endpoint` | `INDRATRACE_ENDPOINT` | `http://localhost:4318` |
 | `capture_content` | `INDRATRACE_CAPTURE_CONTENT` | `false` (token counts only, no prompt/completion text) |
 | `debug` | `INDRATRACE_DEBUG` | `false` (no diagnostics; see below) |
+
+> `ingest_key` (and `INDRATRACE_KEY`) is the deprecated pre-0.5.0 name for
+> `api_key` — still accepted, but it emits a `DeprecationWarning`. Prefer
+> `api_key` / `INDRATRACE_API_KEY`.
 
 Your existing `logging` calls ship automatically once your app is at INFO — the
 usual case under `basicConfig(level=INFO)`, uvicorn, or gunicorn. The SDK does
@@ -315,7 +319,7 @@ configured logging (so it sits at the stdlib default of WARNING), pass
 `log_level="INFO"` to opt in:
 
 ```python
-init_observability(product="my-app", ingest_key="...", log_level="INFO")
+init_observability(product="my-app", api_key="...", log_level="INFO")
 ```
 
 The SDK never raises into your app: if the collector is unreachable or the
@@ -331,7 +335,7 @@ your dashboard empty with no obvious clue why. Pass `debug=True` to make those
 failures *audible*:
 
 ```python
-init_observability(product="my-app", ingest_key="...", debug=True)
+init_observability(product="my-app", api_key="...", debug=True)
 ```
 
 or set `INDRATRACE_DEBUG=1` in the environment. It prints a startup banner and
@@ -343,7 +347,7 @@ indratrace [INFO] indratrace initialized: product=my-app env=dev endpoint=http:/
 indratrace [DEBUG] IndraTrace SDK v0.4.0 initialized
 indratrace [DEBUG]   product=my-app env=dev service=my-app
 indratrace [DEBUG]   endpoint=http://localhost:4318 (traces=http://localhost:4318/v1/traces)
-indratrace [DEBUG]   ingest_key=set capture_content=off
+indratrace [DEBUG]   api_key=set capture_content=off
 indratrace [DEBUG]   signals: traces + logs + metrics (OTLP/HTTP, batched)
 indratrace [DEBUG]   genai[anthropic]: enabled
 indratrace [DEBUG]   claude-agent-sdk: skipped (extra not installed)

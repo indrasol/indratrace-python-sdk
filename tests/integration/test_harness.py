@@ -144,7 +144,7 @@ def test_fastapi_request_lands_in_clickhouse(product: str) -> None:
         product=product,
         env="dev",
         endpoint=OTLP_ENDPOINT,
-        ingest_key="dev-local",
+        api_key="dev-local",
         service_name="itest-api",
         service_version="1.2.3",
         instrument_fastapi=False,
@@ -238,7 +238,7 @@ def test_agent_and_tool_spans_form_a_tree(product: str) -> None:
         product=product,
         env="dev",
         endpoint=OTLP_ENDPOINT,
-        ingest_key="dev-local",
+        api_key="dev-local",
         instrument_fastapi=False,
     )
     provider = _get_provider()
@@ -308,7 +308,7 @@ def test_log_inside_a_span_lands_with_the_same_trace_id(product: str) -> None:
         product=product,
         env="dev",
         endpoint=OTLP_ENDPOINT,
-        ingest_key="dev-local",
+        api_key="dev-local",
         instrument_fastapi=False,
         log_level="INFO",
     )
@@ -353,7 +353,7 @@ def test_metrics_land_with_the_product_resource_attribute(product: str) -> None:
         product=product,
         env="dev",
         endpoint=OTLP_ENDPOINT,
-        ingest_key="dev-local",
+        api_key="dev-local",
         instrument_fastapi=False,
     )
     meter_provider = _get_meter_provider()
@@ -391,7 +391,7 @@ def test_session_and_feedback_land_and_join(product: str) -> None:
         product=product,
         env="dev",
         endpoint=OTLP_ENDPOINT,
-        ingest_key="dev-local",
+        api_key="dev-local",
         instrument_fastapi=False,
     )
     provider = _get_provider()

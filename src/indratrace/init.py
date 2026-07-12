@@ -348,7 +348,7 @@ def _banner_lines(
         f"{_PRODUCT_NAME} SDK v{__version__} initialized",
         f"  product={cfg.product} env={cfg.env} service={cfg.service_name}",
         f"  endpoint={cfg.endpoint} (traces={cfg.traces_endpoint})",
-        f"  ingest_key={'set' if cfg.ingest_key else 'unset (no auth header)'} "
+        f"  api_key={'set' if cfg.api_key else 'unset (no auth header)'} "
         f"capture_content={'on' if capture_content else 'off'}",
         "  signals: traces + logs + metrics (OTLP/HTTP, batched)",
     ]
@@ -389,7 +389,7 @@ def _debug_connectivity_probe(tracer_provider: TracerProvider) -> None:
 def init_observability(
     product: str | None = None,
     env: str | None = None,
-    ingest_key: str | None = None,
+    api_key: str | None = None,
     endpoint: str | None = None,
     service_name: str | None = None,
     service_version: str | None = None,
@@ -397,6 +397,7 @@ def init_observability(
     log_level: int | str | None = None,
     capture_content: bool | None = None,
     debug: bool | None = None,
+    ingest_key: str | None = None,
 ) -> None:
     """Wire OpenTelemetry to ship telemetry to IndraTrace. Call once, at startup.
 
@@ -407,6 +408,14 @@ def init_observability(
     `x-indratrace-key` header.
 
     Args:
+        api_key: The IndraTrace API key. When set, it is sent on every export as
+            the `x-indratrace-key` header; leave it unset (the default) and no
+            auth header is sent. Resolves from the `INDRATRACE_API_KEY` env var
+            when omitted.
+        ingest_key: **Deprecated** alias for `api_key` (renamed in v0.5.0), still
+            accepted for backward compatibility. Passing it — or the
+            `INDRATRACE_KEY` env var — emits a single `DeprecationWarning`. If
+            both are given, `api_key` wins and the warning still fires.
         log_level: If set, the root logger's level is lowered to this so that
             records at or above it reach the export path. Leave it `None` (the
             default) and the SDK will not touch your logging config: records
@@ -458,6 +467,7 @@ def init_observability(
         cfg = resolve_config(
             product=product,
             env=env,
+            api_key=api_key,
             ingest_key=ingest_key,
             endpoint=endpoint,
             service_name=service_name,

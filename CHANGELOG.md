@@ -8,6 +8,29 @@ PyPI versions are immutable — fixes ship as new versions, never a re-upload.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-12
+
+### Changed
+
+- **`api_key` is now the primary name for the ingest credential**, replacing
+  `ingest_key` — in `init_observability(...)` and the `INDRATRACE_API_KEY`
+  environment variable. `api_key` is the universally understood term.
+- Package metadata: author email set to `rithin.gullapalli@indrasol.com`.
+
+### Deprecated
+
+- **`ingest_key` (and the `INDRATRACE_KEY` env var) are deprecated aliases**
+  for `api_key` / `INDRATRACE_API_KEY`. They are still honored for backward
+  compatibility, but using either emits a single `DeprecationWarning`. If both
+  the new and old name are supplied, `api_key` wins and the warning still fires.
+  Precedence is unchanged: explicit arg > env var > default, with the new name
+  taking priority over the old at each level.
+
+### Unchanged
+
+- The wire transport is byte-identical: the auth header is still
+  `x-indratrace-key`. This rename is purely the SDK-facing parameter/env name.
+
 ## [0.4.2] — 2026-07-10
 
 ### Changed

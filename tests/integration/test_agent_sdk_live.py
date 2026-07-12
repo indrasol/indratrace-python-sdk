@@ -128,7 +128,7 @@ def test_real_agent_run_lands_the_full_tree(product: str) -> None:
         product=product,
         env="dev",
         endpoint=OTLP_ENDPOINT,
-        ingest_key="dev-local",
+        api_key="dev-local",
         instrument_fastapi=False,
     )
     provider = _get_provider()

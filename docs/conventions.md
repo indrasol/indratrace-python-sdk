@@ -142,7 +142,9 @@ id may be set independently; nesting overrides per key. Propagation is
 
 - OTLP over HTTP (`/v1/traces`, `/v1/logs`, `/v1/metrics`) to
   `INDRATRACE_ENDPOINT` (e.g. `https://collector.example.com:4318`).
-- Auth header: `x-indratrace-key: <ingest_key>`.
+- Auth header: `x-indratrace-key: <api_key>` (the header name is fixed; the SDK
+  parameter/env that supplies it is `api_key` / `INDRATRACE_API_KEY`, with
+  `ingest_key` / `INDRATRACE_KEY` kept as a deprecated alias).
 - Batch export; on failure, retry per OTel defaults, then drop. Never block.
 
 ## Naming

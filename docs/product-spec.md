@@ -19,7 +19,7 @@ from indratrace import init_observability, trace_agent, trace_tool
 init_observability(
     product="compliance",
     env="prod",
-    ingest_key="obs_live_...",          # from the platform's Product Registry
+    api_key="obs_live_...",             # from the platform's Product Registry
     # endpoint defaults to INDRATRACE_ENDPOINT env var
 )
 

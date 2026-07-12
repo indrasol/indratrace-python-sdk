@@ -120,6 +120,54 @@ class TestResourceOnSpans:
         assert span.resource.attributes["deployment.environment"] == "staging"
 
 
+class TestApiKeyParameter:
+    """`init_observability` accepts `api_key`; `ingest_key` is a deprecated
+    alias that warns once but configures identically (v0.5.0 rename)."""
+
+    def test_api_key_does_not_warn(self, recwarn: pytest.WarningsRecorder) -> None:
+        init_observability(product="demo", api_key="k", instrument_fastapi=False)
+        # Filter to *our* deprecation — third-party instrumentors emit their own
+        # unrelated DeprecationWarnings when genai auto-instrumentation runs.
+        ours = [w for w in recwarn if "ingest_key is deprecated" in str(w.message)]
+        assert not ours
+
+    def test_ingest_key_alias_warns_once(self) -> None:
+        with pytest.warns(DeprecationWarning, match="ingest_key is deprecated"):
+            init_observability(
+                product="demo", ingest_key="k", instrument_fastapi=False
+            )
+
+    def test_both_names_produce_the_same_export_headers(self) -> None:
+        from indratrace.config import API_KEY_HEADER
+
+        init_observability(product="demo", api_key="secret", instrument_fastapi=False)
+        via_new = _provider_export_headers()
+        _reset_for_tests()
+
+        with pytest.warns(DeprecationWarning):
+            init_observability(
+                product="demo", ingest_key="secret", instrument_fastapi=False
+            )
+        via_old = _provider_export_headers()
+
+        assert via_new == via_old == {API_KEY_HEADER: "secret"}
+
+
+def _provider_export_headers() -> dict[str, str]:
+    """The auth headers the built span exporter will send, read back off the
+    provider init_observability wired — the wire behavior the alias must match."""
+    provider = _get_provider()
+    assert provider is not None
+    # Walk the batch processor to its OTLP exporter and read its headers.
+    for processor in provider._active_span_processor._span_processors:
+        exporter = getattr(processor, "span_exporter", None)
+        headers = getattr(exporter, "_headers", None)
+        if headers:
+            # OTLP stores headers lowercased as a dict; return it verbatim.
+            return dict(headers)
+    return {}
+
+
 class TestIdempotency:
     def test_second_call_is_a_noop(
         self, sdk_log: list[logging.LogRecord]

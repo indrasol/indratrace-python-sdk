@@ -10,7 +10,7 @@ Product code (FastAPI app + AI agents)
         │  imports indratrace
         ▼
 indratrace SDK  ──  thin wrapper over OpenTelemetry Python SDK
-        │  OTLP/HTTP (4318), header: x-indratrace-key: <ingest_key>
+        │  OTLP/HTTP (4318), header: x-indratrace-key: <api_key>
         ▼
 OTel Collector  →  ClickHouse          ← the platform (other repo)
 ```

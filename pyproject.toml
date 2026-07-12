@@ -10,7 +10,7 @@ readme = "README.md"
 license = { text = "Apache-2.0" }
 # 3.9 is end-of-life; the SDK supports maintained interpreters only.
 requires-python = ">=3.10"
-authors = [{ name = "Indrasol" }]
+authors = [{ name = "Indrasol", email = "rithin.gullapalli@indrasol.com" }]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: Apache Software License",

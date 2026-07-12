@@ -5,10 +5,10 @@ from __future__ import annotations
 import pytest
 
 from indratrace.config import (
+    API_KEY_HEADER,
     DEFAULT_ENDPOINT,
     DEFAULT_ENV,
     DEFAULT_TENANT_ID,
-    INGEST_KEY_HEADER,
     ObsConfig,
     build_resource,
     resolve_config,
@@ -40,7 +40,7 @@ class TestDefaults:
         assert cfg.endpoint == DEFAULT_ENDPOINT
         assert cfg.env == DEFAULT_ENV
         assert cfg.tenant_id == DEFAULT_TENANT_ID
-        assert cfg.ingest_key is None
+        assert cfg.api_key is None
 
     def test_service_name_defaults_to_product(self) -> None:
         assert resolve_config(product="compliance").service_name == "compliance"
@@ -57,32 +57,32 @@ class TestPrecedence:
         monkeypatch.setenv("INDRATRACE_PRODUCT", "from-env")
         monkeypatch.setenv("INDRATRACE_ENV", "staging")
         monkeypatch.setenv("INDRATRACE_ENDPOINT", "http://collector:4318")
-        monkeypatch.setenv("INDRATRACE_KEY", "env-key")
+        monkeypatch.setenv("INDRATRACE_API_KEY", "env-key")
 
         cfg = resolve_config()
 
         assert cfg.product == "from-env"
         assert cfg.env == "staging"
         assert cfg.endpoint == "http://collector:4318"
-        assert cfg.ingest_key == "env-key"
+        assert cfg.api_key == "env-key"
 
     def test_explicit_args_beat_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("INDRATRACE_PRODUCT", "from-env")
         monkeypatch.setenv("INDRATRACE_ENV", "staging")
         monkeypatch.setenv("INDRATRACE_ENDPOINT", "http://collector:4318")
-        monkeypatch.setenv("INDRATRACE_KEY", "env-key")
+        monkeypatch.setenv("INDRATRACE_API_KEY", "env-key")
 
         cfg = resolve_config(
             product="from-arg",
             env="prod",
             endpoint="http://explicit:4318",
-            ingest_key="arg-key",
+            api_key="arg-key",
         )
 
         assert cfg.product == "from-arg"
         assert cfg.env == "prod"
         assert cfg.endpoint == "http://explicit:4318"
-        assert cfg.ingest_key == "arg-key"
+        assert cfg.api_key == "arg-key"
 
     def test_empty_arg_falls_through_to_env(
         self, monkeypatch: pytest.MonkeyPatch
@@ -95,12 +95,12 @@ class TestPrecedence:
     def test_args_and_env_can_mix(
         self, monkeypatch: pytest.MonkeyPatch, no_endpoint_env: None
     ) -> None:
-        monkeypatch.setenv("INDRATRACE_KEY", "env-key")
+        monkeypatch.setenv("INDRATRACE_API_KEY", "env-key")
 
         cfg = resolve_config(product="p", env="prod")
 
         assert (cfg.product, cfg.env) == ("p", "prod")
-        assert cfg.ingest_key == "env-key"  # only the key came from env
+        assert cfg.api_key == "env-key"  # only the key came from env
         assert cfg.endpoint == DEFAULT_ENDPOINT  # and this from defaults
 
 
@@ -113,9 +113,9 @@ class TestTransport:
         cfg = resolve_config(product="p", endpoint="http://host:4318/")
         assert cfg.traces_endpoint == "http://host:4318/v1/traces"
 
-    def test_ingest_key_becomes_auth_header(self) -> None:
-        cfg = resolve_config(product="p", ingest_key="secret")
-        assert cfg.headers == {INGEST_KEY_HEADER: "secret"}
+    def test_api_key_becomes_auth_header(self) -> None:
+        cfg = resolve_config(product="p", api_key="secret")
+        assert cfg.headers == {API_KEY_HEADER: "secret"}
 
     def test_no_key_means_no_header(self) -> None:
         assert resolve_config(product="p").headers == {}
@@ -162,3 +162,72 @@ class TestResource:
         attrs = build_resource(resolve_config(product="p")).attributes
         assert attrs["telemetry.sdk.language"] == "python"
         assert "telemetry.sdk.version" in attrs
+
+
+class TestApiKeyDeprecation:
+    """`ingest_key` / `INDRATRACE_KEY` are deprecated aliases for `api_key` /
+    `INDRATRACE_API_KEY` (renamed in v0.5.0): still honored, warn once."""
+
+    def test_new_arg_configures_without_warning(
+        self, recwarn: pytest.WarningsRecorder
+    ) -> None:
+        cfg = resolve_config(product="p", api_key="new-key")
+        assert cfg.api_key == "new-key"
+        assert not [w for w in recwarn if "ingest_key is deprecated" in str(w.message)]
+
+    def test_deprecated_arg_still_works_and_warns_once(self) -> None:
+        with pytest.warns(DeprecationWarning, match="ingest_key is deprecated"):
+            cfg = resolve_config(product="p", ingest_key="old-key")
+        assert cfg.api_key == "old-key"
+
+    def test_both_args_api_key_wins_and_still_warns(self) -> None:
+        with pytest.warns(DeprecationWarning, match="ingest_key is deprecated"):
+            cfg = resolve_config(product="p", api_key="new-key", ingest_key="old-key")
+        # api_key wins even though the deprecated name was also passed.
+        assert cfg.api_key == "new-key"
+
+    def test_new_env_var_configures_without_warning(
+        self, monkeypatch: pytest.MonkeyPatch, recwarn: pytest.WarningsRecorder
+    ) -> None:
+        monkeypatch.setenv("INDRATRACE_API_KEY", "env-new")
+        cfg = resolve_config(product="p")
+        assert cfg.api_key == "env-new"
+        assert not [w for w in recwarn if "ingest_key is deprecated" in str(w.message)]
+
+    def test_deprecated_env_var_still_works_and_warns(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("INDRATRACE_KEY", "env-old")
+        with pytest.warns(DeprecationWarning, match="ingest_key is deprecated"):
+            cfg = resolve_config(product="p")
+        assert cfg.api_key == "env-old"
+
+    def test_new_env_beats_deprecated_env_no_warning(
+        self, monkeypatch: pytest.MonkeyPatch, recwarn: pytest.WarningsRecorder
+    ) -> None:
+        # New env var shadows the old one, so the deprecated name is not "in use".
+        monkeypatch.setenv("INDRATRACE_API_KEY", "env-new")
+        monkeypatch.setenv("INDRATRACE_KEY", "env-old")
+        cfg = resolve_config(product="p")
+        assert cfg.api_key == "env-new"
+        assert not [w for w in recwarn if "ingest_key is deprecated" in str(w.message)]
+
+    def test_explicit_arg_beats_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("INDRATRACE_API_KEY", "env-new")
+        cfg = resolve_config(product="p", api_key="arg-new")
+        assert cfg.api_key == "arg-new"
+
+    def test_deprecated_arg_beats_new_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicitly-passed deprecated arg still outranks any env var —
+        it's an explicit arg, so it warns but wins over INDRATRACE_API_KEY."""
+        monkeypatch.setenv("INDRATRACE_API_KEY", "env-new")
+        with pytest.warns(DeprecationWarning, match="ingest_key is deprecated"):
+            cfg = resolve_config(product="p", ingest_key="arg-old")
+        assert cfg.api_key == "arg-old"
+
+    def test_ingest_key_property_mirrors_api_key(self) -> None:
+        """The deprecated `ObsConfig.ingest_key` accessor still reads the key."""
+        cfg = resolve_config(product="p", api_key="k")
+        assert cfg.ingest_key == "k"

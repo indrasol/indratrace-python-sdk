@@ -8,6 +8,7 @@ Responsibilities (docs/architecture.md):
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass
 
 from opentelemetry.sdk.resources import Resource
@@ -25,7 +26,10 @@ DEFAULT_SERVICE_VERSION = "0.0.0"
 DEFAULT_EXPORT_TIMEOUT_SECONDS = 3.0
 
 ENV_ENDPOINT = "INDRATRACE_ENDPOINT"
-ENV_KEY = "INDRATRACE_KEY"
+#: Primary env var for the API key. `INDRATRACE_KEY` is the deprecated alias,
+#: honored with the same precedence + a `DeprecationWarning` (see resolve_config).
+ENV_API_KEY = "INDRATRACE_API_KEY"
+ENV_KEY = "INDRATRACE_KEY"  # deprecated alias for ENV_API_KEY
 ENV_PRODUCT = "INDRATRACE_PRODUCT"
 ENV_ENV = "INDRATRACE_ENV"
 #: Opt-in prompt/completion content capture (default off). Truthy values:
@@ -40,8 +44,13 @@ ENV_DEBUG = "INDRATRACE_DEBUG"
 #: Env values that read as True. Anything else (incl. unset) is False.
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
-#: Auth header carrying the ingest key (docs/conventions.md § Transport).
-INGEST_KEY_HEADER = "x-indratrace-key"
+#: Auth header carrying the API key (docs/conventions.md § Transport). The wire
+#: header name is a fixed transport contract and does NOT change with the
+#: `ingest_key` → `api_key` parameter rename (v0.5.0).
+API_KEY_HEADER = "x-indratrace-key"
+
+#: Deprecated alias for `API_KEY_HEADER`; kept so existing imports don't break.
+INGEST_KEY_HEADER = API_KEY_HEADER
 
 
 @dataclass(frozen=True)
@@ -54,8 +63,13 @@ class ObsConfig:
     service_name: str
     service_version: str
     tenant_id: str = DEFAULT_TENANT_ID
-    ingest_key: str | None = None
+    api_key: str | None = None
     export_timeout_seconds: float = DEFAULT_EXPORT_TIMEOUT_SECONDS
+
+    @property
+    def ingest_key(self) -> str | None:
+        """Deprecated alias for `api_key` (renamed in v0.5.0)."""
+        return self.api_key
 
     @property
     def traces_endpoint(self) -> str:
@@ -74,10 +88,10 @@ class ObsConfig:
 
     @property
     def headers(self) -> dict[str, str]:
-        """Export headers. Empty when no ingest key is configured."""
-        if not self.ingest_key:
+        """Export headers. Empty when no API key is configured."""
+        if not self.api_key:
             return {}
-        return {INGEST_KEY_HEADER: self.ingest_key}
+        return {API_KEY_HEADER: self.api_key}
 
 
 def _first(*values: str | None) -> str | None:
@@ -88,16 +102,55 @@ def _first(*values: str | None) -> str | None:
     return None
 
 
+def _resolve_api_key(
+    api_key: str | None,
+    ingest_key: str | None,
+) -> str | None:
+    """Resolve the API key, honoring the deprecated `ingest_key` alias.
+
+    Precedence: `api_key` arg > `ingest_key` arg > `INDRATRACE_API_KEY` env >
+    `INDRATRACE_KEY` env. A single `DeprecationWarning` is emitted whenever the
+    deprecated arg is passed or the deprecated env var supplies the value —
+    including when `api_key` also wins (the caller still passed a deprecated
+    name and should learn to drop it).
+    """
+    env_api_key = os.getenv(ENV_API_KEY)
+    env_ingest_key = os.getenv(ENV_KEY)
+
+    # The deprecated surface is "in use" if the caller passed the old arg, or if
+    # the old env var is the source that actually supplies the value (no newer
+    # source shadows it). Both cases earn exactly one warning.
+    deprecated_arg_passed = ingest_key is not None
+    deprecated_env_is_source = (
+        not api_key and not ingest_key and not env_api_key and bool(env_ingest_key)
+    )
+    if deprecated_arg_passed or deprecated_env_is_source:
+        warnings.warn(
+            "ingest_key is deprecated; use api_key "
+            "(env: INDRATRACE_KEY → INDRATRACE_API_KEY)",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+
+    return _first(api_key, ingest_key, env_api_key, env_ingest_key)
+
+
 def resolve_config(
     product: str | None = None,
     env: str | None = None,
-    ingest_key: str | None = None,
+    api_key: str | None = None,
     endpoint: str | None = None,
     service_name: str | None = None,
     service_version: str | None = None,
     tenant_id: str | None = None,
+    ingest_key: str | None = None,
 ) -> ObsConfig:
     """Resolve config with precedence: explicit args > env vars > defaults.
+
+    `ingest_key` is a deprecated alias for `api_key` (renamed in v0.5.0). It is
+    still accepted; passing it (or the `INDRATRACE_KEY` env var) emits a single
+    `DeprecationWarning`. If both `api_key` and `ingest_key` are given, `api_key`
+    wins — the warning still fires.
 
     Raises:
         ValueError: if `product` resolves to nothing. It is required by the
@@ -118,7 +171,7 @@ def resolve_config(
         service_name=service_name or resolved_product,
         service_version=service_version or DEFAULT_SERVICE_VERSION,
         tenant_id=tenant_id or DEFAULT_TENANT_ID,
-        ingest_key=_first(ingest_key, os.getenv(ENV_KEY)),
+        api_key=_resolve_api_key(api_key, ingest_key),
         # Read at call time, not bound as a dataclass default, so the test
         # suite can shrink it and not pay a real export backoff per teardown.
         export_timeout_seconds=DEFAULT_EXPORT_TIMEOUT_SECONDS,

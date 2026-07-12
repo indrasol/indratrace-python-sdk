@@ -203,11 +203,11 @@ class TestBannerContent:
         assert "env=staging" in text
         assert DEAD_ENDPOINT in text
 
-    def test_banner_reports_ingest_key_and_capture_content_state(
+    def test_banner_reports_api_key_and_capture_content_state(
         self, sdk_log: list[logging.LogRecord]
     ) -> None:
-        text = self._banner(sdk_log, ingest_key="secret", capture_content=True)
-        assert "ingest_key=set" in text
+        text = self._banner(sdk_log, api_key="secret", capture_content=True)
+        assert "api_key=set" in text
         assert "capture_content=on" in text
 
     def test_banner_reports_each_instrumentor_status(

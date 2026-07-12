@@ -95,7 +95,7 @@ def _init(product: str) -> None:
         product=product,
         env="dev",
         endpoint=OTLP_ENDPOINT,
-        ingest_key="dev-local",
+        api_key="dev-local",
         instrument_fastapi=False,
     )
     assert _get_provider() is not None
