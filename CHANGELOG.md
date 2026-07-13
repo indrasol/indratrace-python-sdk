@@ -8,6 +8,89 @@ PyPI versions are immutable — fixes ship as new versions, never a re-upload.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-07-12
+
+Closes the two biggest "it just works" gaps: **Loguru** apps were shipping no
+logs at all, and **Django/Flask** apps were getting logs but no HTTP spans. Both
+now work from the same single `init_observability()` call.
+
+### Added
+
+- **Loguru auto-bridge — zero config.** Loguru bypasses stdlib `logging`
+  entirely (it dispatches to its own sinks), so before this release a
+  loguru-only app shipped **nothing** on the logs signal, silently. Now, if
+  `loguru` is importable, `init_observability()` adds a sink that forwards its
+  records to the OTel log handler: severities preserved (including loguru's own
+  `SUCCESS`/`TRACE` and any custom level, mapped by number when stdlib has no
+  name for them), exception info and stack traces intact, `{}`-style
+  interpolation intact, and trace correlation — a line logged inside a span
+  carries that span's trace context, exactly like a stdlib one. Same INFO+
+  export threshold as the stdlib bridge, so DEBUG stays local.
+
+  The sink feeds the SDK's handler **directly** rather than re-entering the
+  stdlib logging tree, which means: the app's own console output is unchanged
+  (no duplicate line), an app using loguru *and* stdlib exports each record
+  exactly once, and INFO records ship even when the root logger sits at its
+  WARNING default. Idempotent across re-init, and the SDK's own diagnostics are
+  filtered off the path so a failed export can't feed itself. Absent loguru:
+  nothing imported, nothing paid.
+- **`bridge_loguru()`** — re-attaches the bridge after your own loguru
+  reconfiguration. `logger.remove()` (the idiomatic way to drop loguru's default
+  stderr sink) removes *every* sink, ours included, so an app that configures
+  loguru *after* init silently unbridges itself; this puts it back. Idempotent;
+  returns `False` rather than raising if loguru is absent or init never ran.
+- **`django` extra** — `indratrace[django]` enables
+  `opentelemetry-instrumentation-django`, giving automatic HTTP server spans.
+  **Placement matters:** the instrumentor works by inserting middleware into
+  `settings.MIDDLEWARE`, which Django reads once when it builds the application
+  object — so `init_observability()` must run *before* `get_wsgi_application()` /
+  `get_asgi_application()` (top of `wsgi.py`/`asgi.py`/`manage.py`). Called
+  after, the middleware lands in a chain Django has already built: no HTTP
+  spans, and no error. Documented in the README rather than papered over.
+- **`flask` extra** — `indratrace[flask]` enables
+  `opentelemetry-instrumentation-flask`. **The already-imported-class caveat is
+  real here** (verified against the pinned instrumentor): it works by replacing
+  the `flask.Flask` class, so an app built from a `from flask import Flask` name
+  — bound *before* init ran, which is the usual import style — is left
+  uninstrumented, silently.
+- **`instrument_flask_app(app)`** — the one-line rescue for exactly that case:
+  instruments a Flask app instance directly, whatever the import order was. Safe
+  to call twice, never raises, and a no-op without the `flask` extra.
+- **README support matrix** — framework/library → logs → HTTP server spans →
+  model spans → agent spans, with the extra each needs. States the thing users
+  most often get wrong up front: *if your app uses Python's standard logging,
+  your logs are already in IndraTrace — don't use `print()`.* New Django, Flask,
+  and Loguru sections cover the two placement caveats above.
+
+### Changed
+
+- **`instrument_fastapi` → `instrument_http`** in `init_observability(...)`. It
+  now gates FastAPI, Django, and Flask together. The old name still works (it
+  gates all three) and is **not** deprecated with a warning — it was almost
+  always passed as `False` to *disable* instrumentation, and warning at those
+  callers buys them nothing. `instrument_http` wins if both are given.
+- **HTTP instrumentors are now handed the SDK's own tracer provider**
+  explicitly, as the GenAI and Agent-SDK instrumentors already were. Previously
+  FastAPI's was left to find the OTel *global* provider, which is frozen at the
+  first `set_tracer_provider` in a process — so in any process that inits more
+  than once (test sessions, reloading workers) its spans could land on a stale
+  provider.
+- The `debug=True` banner gains an `http[fastapi|django|flask]` line per
+  framework and a `loguru` line, each `enabled` or `skipped (reason)` — so every
+  row of the support matrix is answerable from the banner. It also now notes what
+  the banner *can't* tell you: whether init ran early enough for Django/Flask.
+- `docs/conventions.md`: the HTTP-spans entry now names all three instrumentors
+  and states the contract explicitly — **consume, don't fork**: the SDK adds and
+  renames nothing on those spans; the platform reads each instrumentor's own OTel
+  HTTP semconv names.
+
+### Unchanged
+
+- Core stays dependency-clean: every framework instrumentor is an optional extra,
+  and loguru is detected, never depended on (there is deliberately **no** `loguru`
+  extra — the bridge needs nothing installed on our side). An absent extra remains
+  a silent skip, and every new path is fail-silent (ADR 0003).
+
 ## [0.5.0] — 2026-07-12
 
 ### Changed
@@ -243,7 +326,11 @@ AI agents behind a three-call public API.
 Reserved-name stub. Published only to claim the `indratrace` name on PyPI and
 prove the package installs; it carries no functional SDK.
 
-[Unreleased]: https://github.com/indrasol/indratrace-python-sdk/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/indrasol/indratrace-python-sdk/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/indrasol/indratrace-python-sdk/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/indrasol/indratrace-python-sdk/compare/v0.4.2...v0.5.0
+[0.4.2]: https://github.com/indrasol/indratrace-python-sdk/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/indrasol/indratrace-python-sdk/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/indrasol/indratrace-python-sdk/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/indrasol/indratrace-python-sdk/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/indrasol/indratrace-python-sdk/compare/v0.1.0...v0.2.0

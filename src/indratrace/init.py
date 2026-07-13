@@ -36,7 +36,9 @@ from .config import (
 )
 from .context import SessionSpanProcessor
 from .genai import _uninstrument_genai, enable_genai_instrumentation
+from .logs import _disable_loguru_bridge, enable_loguru_bridge
 from .version import __version__
+from .web import _uninstrument_http, enable_http_instrumentation
 
 logger = logging.getLogger("indratrace")
 
@@ -103,26 +105,6 @@ def _shutdown_quietly(providers: Iterable[_Shutdownable | None]) -> None:
             provider.shutdown()
         except Exception:  # noqa: BLE001 — teardown never raises
             logger.debug("indratrace: provider shutdown failed", exc_info=True)
-
-
-def _instrument_fastapi() -> tuple[bool, str]:
-    """Enable FastAPI auto-instrumentation if the optional extra is installed.
-
-    Absent extra is a normal, silent outcome — not every product is a web app.
-    Returns `(enabled, reason)` for the debug banner; `reason` is empty when on.
-    """
-    try:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-    except ImportError:
-        logger.debug(
-            "opentelemetry-instrumentation-fastapi not installed; "
-            "skipping HTTP auto-instrumentation"
-        )
-        return False, "extra not installed"
-
-    FastAPIInstrumentor().instrument()
-    logger.debug("FastAPI auto-instrumentation enabled")
-    return True, ""
 
 
 def _audible_export(exporter: Any, signal: str) -> Any:
@@ -327,7 +309,8 @@ def _enable_debug_logging() -> tuple[logging.Handler | None, int | None]:
 
 def _banner_lines(
     cfg: ObsConfig,
-    fastapi_status: tuple[bool, str] | None,
+    http_statuses: list[tuple[str, bool, str]],
+    loguru_status: tuple[bool, str],
     genai_statuses: list[tuple[str, bool, str]],
     agent_sdk_status: tuple[bool, str] | None,
     capture_content: bool,
@@ -352,8 +335,9 @@ def _banner_lines(
         f"capture_content={'on' if capture_content else 'off'}",
         "  signals: traces + logs + metrics (OTLP/HTTP, batched)",
     ]
-    if fastapi_status is not None:
-        lines.append(f"  fastapi: {status(*fastapi_status)}")
+    for framework, enabled, reason in http_statuses:
+        lines.append(f"  http[{framework}]: {status(enabled, reason)}")
+    lines.append(f"  loguru: {status(*loguru_status)}")
     for provider, enabled, reason in genai_statuses:
         lines.append(f"  genai[{provider}]: {status(enabled, reason)}")
     if agent_sdk_status is not None:
@@ -393,19 +377,20 @@ def init_observability(
     endpoint: str | None = None,
     service_name: str | None = None,
     service_version: str | None = None,
-    instrument_fastapi: bool = True,
+    instrument_http: bool = True,
     log_level: int | str | None = None,
     capture_content: bool | None = None,
     debug: bool | None = None,
     ingest_key: str | None = None,
+    instrument_fastapi: bool | None = None,
 ) -> None:
     """Wire OpenTelemetry to ship telemetry to IndraTrace. Call once, at startup.
 
-    Sets up all three signals: traces, logs (stdlib `logging` bridged into OTel,
-    carrying trace context), and metrics. Config precedence is explicit args >
-    `INDRATRACE_*` env vars > defaults (see docs/conventions.md). Everything
-    exports over OTLP/HTTP from background batchers, authenticated with the
-    `x-indratrace-key` header.
+    Sets up all three signals: traces, logs (stdlib `logging` — and `loguru` —
+    bridged into OTel, carrying trace context), and metrics. Config precedence is
+    explicit args > `INDRATRACE_*` env vars > defaults (see docs/conventions.md).
+    Everything exports over OTLP/HTTP from background batchers, authenticated
+    with the `x-indratrace-key` header.
 
     Args:
         api_key: The IndraTrace API key. When set, it is sent on every export as
@@ -416,6 +401,20 @@ def init_observability(
             accepted for backward compatibility. Passing it — or the
             `INDRATRACE_KEY` env var — emits a single `DeprecationWarning`. If
             both are given, `api_key` wins and the warning still fires.
+        instrument_http: Whether to auto-instrument the web frameworks whose
+            extras are installed — FastAPI, Django, and Flask — so every HTTP
+            request becomes a server span. On by default; an absent extra is a
+            silent skip, so this costs nothing if your app is not a web app. Two
+            placement caveats that produce *silent* zero-span outcomes: **Django**
+            works by inserting middleware into `settings.MIDDLEWARE`, so init must
+            run before `get_wsgi_application()` (top of `wsgi.py`/`asgi.py`); and
+            **Flask** works by replacing the `flask.Flask` class, so an app built
+            from a `from flask import Flask` name bound before init needs
+            `instrument_flask_app(app)`. Both are covered in the README.
+        instrument_fastapi: **Deprecated** alias for `instrument_http` (renamed in
+            v0.6.0, when Django and Flask joined FastAPI). Still honored — it
+            gates all three frameworks, not just FastAPI. If both are given,
+            `instrument_http` wins.
         log_level: If set, the root logger's level is lowered to this so that
             records at or above it reach the export path. Leave it `None` (the
             default) and the SDK will not touch your logging config: records
@@ -452,6 +451,14 @@ def init_observability(
     if _initialized:
         logger.debug("init_observability() already called; ignoring")
         return
+
+    # `instrument_fastapi` is the pre-0.6.0 name, from when FastAPI was the only
+    # web framework we instrumented. It now gates all three; the new name wins if
+    # both are passed. No DeprecationWarning: unlike `ingest_key`, the old name
+    # was almost always passed as `False` by tests/scripts to *disable* HTTP
+    # instrumentation, and warning at them buys the user nothing.
+    if instrument_fastapi is not None and instrument_http:
+        instrument_http = instrument_fastapi
 
     # Resolve + wire debug *first*, before anything that can fail: a missing
     # `product` raises inside resolve_config, and the operator who asked for
@@ -498,20 +505,39 @@ def init_observability(
         metrics.set_meter_provider(meter_provider)
 
         # Past this point the globals are frozen, so a failure here must not
-        # unwind the signals: FastAPI instrumentation is a bonus, not a
+        # unwind the signals: HTTP instrumentation is a bonus, not a
         # prerequisite. Absent extra is already handled inside. Each integration
         # returns its enabled/skipped(reason) status for the debug banner.
-        fastapi_status: tuple[bool, str] | None = None
-        if instrument_fastapi:
+        #
+        # FastAPI, Django, and Flask, each behind its own extra and each handed
+        # OUR tracer provider (web.py). Django's must land before its middleware
+        # chain is built and Flask's misses pre-imported `Flask` names — both
+        # documented there and in the README, neither detectable from here.
+        http_statuses: list[tuple[str, bool, str]] = []
+        if instrument_http:
             try:
-                fastapi_status = _instrument_fastapi()
-            except Exception as exc:  # noqa: BLE001 — HTTP spans are optional
-                fastapi_status = (False, f"instrument failed: {exc}")
+                http_statuses = enable_http_instrumentation(tracer_provider)
+            except Exception:  # noqa: BLE001 — HTTP spans are optional
                 logger.warning(
-                    "indratrace: FastAPI auto-instrumentation failed; "
+                    "indratrace: HTTP auto-instrumentation failed; "
                     "other signals are unaffected",
                     exc_info=True,
                 )
+
+        # Loguru: bridge its records into the OTel log handler we just attached,
+        # so a loguru-only app's logs reach the pipeline with no configuration at
+        # all (loguru bypasses stdlib logging entirely, so without this it emits
+        # nothing). Absent loguru is a silent skip inside; fail-silent, and
+        # idempotent across re-init.
+        loguru_status: tuple[bool, str] = (False, "loguru not installed")
+        try:
+            loguru_status = enable_loguru_bridge(log_handler)
+        except Exception as exc:  # noqa: BLE001 — the log bridge is a bonus
+            loguru_status = (False, f"bridge failed: {exc}")
+            logger.warning(
+                "indratrace: loguru bridge failed; other signals are unaffected",
+                exc_info=True,
+            )
 
         # GenAI instrumentors, handed OUR provider (not the frozen global) so
         # model spans nest under the same trace as the agent/tool spans. Also a
@@ -565,7 +591,8 @@ def init_observability(
         if debug_on:
             for line in _banner_lines(
                 cfg,
-                fastapi_status,
+                http_statuses,
+                loguru_status,
                 genai_statuses,
                 agent_sdk_status,
                 resolve_capture_content(capture_content),
@@ -601,6 +628,15 @@ def _get_meter_provider() -> MeterProvider | None:
     return _meter_provider
 
 
+def _get_log_handler() -> LoggingHandler | None:
+    """The OTel log handler this SDK attached to root, or None. Not public API.
+
+    `bridge_loguru()` needs it to re-attach the loguru sink after an app's own
+    `logger.remove()` dropped it.
+    """
+    return _log_handler
+
+
 def _reset_for_tests() -> None:
     """Tear down module state so a test can init again. Not public API."""
     global _initialized, _provider, _logger_provider, _meter_provider
@@ -622,18 +658,14 @@ def _reset_for_tests() -> None:
     if _debug_level_before is not None:
         sdk_logger.setLevel(_debug_level_before)
 
+    # Take the loguru sink off before the providers go: loguru's `logger` is a
+    # process-wide singleton, so a leaked sink would keep feeding records into a
+    # handler whose provider is being torn down.
+    _disable_loguru_bridge()
+
     _shutdown_quietly((_provider, _logger_provider, _meter_provider))
 
-    try:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-    except ImportError:
-        pass
-    else:
-        try:
-            FastAPIInstrumentor().uninstrument()
-        except Exception:  # noqa: BLE001 — uninstrumenting a clean process
-            pass
-
+    _uninstrument_http()
     _uninstrument_genai()
     _disable_agent_sdk_instrumentation()
 

@@ -65,10 +65,17 @@ class TestPublicApi:
         assert callable(indratrace.session)
         assert callable(indratrace.record_feedback)
         assert callable(indratrace.current_trace_id)
+        # v0.6 escape hatches: `instrument_flask_app` for an app whose `Flask`
+        # class was imported before init (web.py), `bridge_loguru` for an app
+        # that reconfigured loguru after init (logs.py).
+        assert callable(indratrace.instrument_flask_app)
+        assert callable(indratrace.bridge_loguru)
         assert set(indratrace.__all__) == {
             "__version__",
+            "bridge_loguru",
             "current_trace_id",
             "init_observability",
+            "instrument_flask_app",
             "record_feedback",
             "record_llm_usage",
             "session",

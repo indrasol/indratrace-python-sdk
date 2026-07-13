@@ -105,8 +105,14 @@ Cost is **never** recorded even though `ResultMessage.total_cost_usd` is offered
 raw counts only (ADR 0005). `agent.framework` selects exactly this feature's
 spans at query time.
 
-- **HTTP spans**: whatever `FastAPIInstrumentor` emits (OTel HTTP semconv).
-  Don't customize.
+- **HTTP spans**: whatever the framework's official OTel instrumentor emits —
+  `FastAPIInstrumentor`, `DjangoInstrumentor`, or `FlaskInstrumentor` (v0.6.0),
+  each following the OTel HTTP semconv. **Consume, don't fork**: the SDK adds no
+  attributes of its own to these spans and renames nothing, so the platform reads
+  the instrumentors' names (`http.route`, `http.request.method`, and the status
+  code under whichever name that instrumentor's semconv mode emits). Don't
+  customize. (Session/user ids still land on them, via the span processor — that
+  is stamped at span start for *every* span, not an HTTP-specific rewrite.)
 
 - **Feedback spans** (`record_feedback`): name = `feedback`, attributes
   `indratrace.span.kind = "feedback"`, `feedback.score` (int/float — `1` =

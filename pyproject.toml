@@ -29,7 +29,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# HTTP server spans, one extra per web framework. Each pulls only the official
+# OTel instrumentor — never the framework itself, which the host app already has.
 fastapi = ["opentelemetry-instrumentation-fastapi"]
+django = ["opentelemetry-instrumentation-django"]
+flask = ["opentelemetry-instrumentation-flask"]
 # GenAI capture via OpenLLMetry instrumentors (ADR 0005), optional so core stays
 # OTel-only (ADR 0003). Floors are recent enough to track today's provider SDKs
 # (Anthropic messages/streaming, OpenAI v1 client with usage in streamed chunks).
@@ -48,6 +52,14 @@ dev = [
     "fastapi",
     "uvicorn",
     "httpx",
+    # The web-framework and loguru tests drive minimal real apps (a Flask app, a
+    # Django view, a loguru logger) through the instrumentors and assert on the
+    # spans/records that come out — so the frameworks themselves must be
+    # importable in dev. They are NOT runtime deps: the extras pull only the OTel
+    # instrumentors; the host app brings its own framework.
+    "django>=4.2",
+    "flask>=2.0",
+    "loguru>=0.7",
     # Provider SDKs are dev-only: the GenAI unit tests need them importable so
     # the instrumentors can patch them (Anthropic/OpenAI mock the transport and
     # dump attributes; Gemini/Bedrock assert instrument/uninstrument wiring —

@@ -222,10 +222,28 @@ class TestBannerContent:
             debug=True,
         )
         text = "\n".join(console_lines(sdk_log))
-        # instrument_fastapi=False means the banner never adds a fastapi line;
+        # instrument_http=False means the banner never adds an http[...] line;
         # the GenAI providers (dev deps in this env) come on.
         assert "genai[anthropic]: enabled" in text
         assert "claude-agent-sdk: enabled" in text
+
+    def test_banner_reports_each_web_framework_and_loguru(
+        self, sdk_log: list[logging.LogRecord]
+    ) -> None:
+        """v0.6: an operator must be able to see whether Django/Flask/loguru came
+        on — 'why are there no HTTP spans?' is answered by this line."""
+        init_observability(
+            product="probe",
+            endpoint=DEAD_ENDPOINT,
+            debug=True,
+        )
+        text = "\n".join(console_lines(sdk_log))
+
+        # All are dev deps in this environment, so all three frameworks come on.
+        assert "http[fastapi]: enabled" in text
+        assert "http[django]: enabled" in text
+        assert "http[flask]: enabled" in text
+        assert "loguru: enabled" in text
 
     def test_skipped_extra_shows_a_reason(
         self, sdk_log: list[logging.LogRecord], monkeypatch: pytest.MonkeyPatch

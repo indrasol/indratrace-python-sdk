@@ -21,12 +21,16 @@ from .agent import trace_agent, trace_step, trace_tool
 from .context import current_trace_id, record_feedback, session
 from .genai import record_llm_usage
 from .init import init_observability
+from .logs import bridge_loguru
 from .version import __version__
+from .web import instrument_flask_app
 
 __all__ = [
     "__version__",
+    "bridge_loguru",
     "current_trace_id",
     "init_observability",
+    "instrument_flask_app",
     "record_feedback",
     "record_llm_usage",
     "session",
