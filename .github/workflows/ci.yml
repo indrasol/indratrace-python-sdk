@@ -37,7 +37,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install --upgrade pip
-      - run: pip install -e ".[dev,fastapi,anthropic,openai,gemini,bedrock,claude-agent-sdk]"
+      # Every extra, so no test silently `importorskip`s away — the django/flask
+      # and loguru suites drive real minimal apps, and a green run must mean they
+      # actually ran.
+      - run: pip install -e ".[dev,fastapi,django,flask,anthropic,openai,gemini,bedrock,claude-agent-sdk]"
       # genai is a paid live-key ritual (stays local); integration needs the
       # harness (its own job below). This job is the pure-offline suite.
       - run: pytest -m "not integration and not genai" -q
