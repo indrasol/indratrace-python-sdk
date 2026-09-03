@@ -1,8 +1,16 @@
-"""Config resolution: explicit args > env vars > defaults.
+"""Config resolution: the API key, and a small number of optional labels.
 
 Responsibilities (docs/architecture.md):
-- Resolve endpoint/key/product/env from args or INDRATRACE_* env vars.
-- Build the OTel Resource carrying the required attributes (docs/conventions.md).
+- Resolve the API key from the `api_key` argument or `INDRATRACE_API_KEY`, and
+  fail loudly when there is none.
+- Build the OTel Resource carrying the attributes the SDK still owns
+  (docs/conventions.md § Resource attributes).
+
+**v1.0 — the key decides identity (ADR 0009).** `product`, `deployment.environment`
+and `tenant.id` are no longer the SDK's to resolve or to send: the platform's
+ingest gateway drops whatever the payload claims and stamps all three from the
+API key (platform P80 / platform ADR 0010 §1 as amended). What is left here is a
+credential and two labels about the *deployable* — `service.name`, `service.version`.
 """
 
 from __future__ import annotations
@@ -15,23 +23,46 @@ from opentelemetry.sdk.resources import Resource
 
 from .version import __version__
 
-DEFAULT_ENDPOINT = "http://localhost:4318"
-DEFAULT_ENV = "dev"
-DEFAULT_TENANT_ID = "internal"
+
+class IndraTraceConfigError(ValueError):
+    """The SDK was configured in a way that cannot possibly work.
+
+    Raised **only** from `init_observability`, which is the one moment a
+    developer is looking at the SDK. It does not weaken fail-silence: exports
+    stay async, batched, and never raise or block at runtime (ADR 0003). What
+    changes in 1.0 is that a *startup* mistake — no API key, or a parameter that
+    no longer exists — stops being a silent stream of 401s nobody ever sees.
+
+    A `ValueError` subclass so code that already guarded `init_observability`
+    with `except ValueError` keeps catching it.
+    """
+
+
+#: Where the SDK ships OTLP. This is the IndraTrace **ingest gateway** — the
+#: component that authenticates the API key and stamps tenant/product/env
+#: (platform ADR 0010 §1). It replaces the pre-gateway collector port (`:4318`),
+#: which no longer terminates SDK traffic. Becomes the production ingest
+#: hostname when it is decided (platform deployment arc phase 5); until then the
+#: dev gateway. One named constant, one place — there is no `endpoint` parameter.
+DEFAULT_ENDPOINT = "http://localhost:8088"
+
 DEFAULT_SERVICE_VERSION = "0.0.0"
 
 #: Seconds to spend on one export attempt (incl. OTel's internal retries).
-#: OTel's own default is 10s, which makes a dead collector stall `shutdown()`
+#: OTel's own default is 10s, which makes a dead gateway stall `shutdown()`
 #: — and therefore process exit — for seconds. ADR 0003 says drop, don't block.
 DEFAULT_EXPORT_TIMEOUT_SECONDS = 3.0
 
-ENV_ENDPOINT = "INDRATRACE_ENDPOINT"
-#: Primary env var for the API key. `INDRATRACE_KEY` is the deprecated alias,
-#: honored with the same precedence + a `DeprecationWarning` (see resolve_config).
+#: The only supported env var for the key, and the only configuration a customer
+#: ever sets. Everything else the platform derives from it.
 ENV_API_KEY = "INDRATRACE_API_KEY"
-ENV_KEY = "INDRATRACE_KEY"  # deprecated alias for ENV_API_KEY
-ENV_PRODUCT = "INDRATRACE_PRODUCT"
-ENV_ENV = "INDRATRACE_ENV"
+
+#: **Undocumented developer override**, for running the SDK against a local
+#: stack (see CONTRIBUTING.md). Deliberately absent from the README and from
+#: conventions.md's customer-facing Transport section: a customer points at
+#: IndraTrace by holding an IndraTrace key, not by choosing a host.
+ENV_ENDPOINT = "INDRATRACE_ENDPOINT"
+
 #: Opt-in prompt/completion content capture (default off). Truthy values:
 #: 1/true/yes/on (case-insensitive). See `resolve_capture_content`.
 ENV_CAPTURE_CONTENT = "INDRATRACE_CAPTURE_CONTENT"
@@ -41,35 +72,99 @@ ENV_CAPTURE_CONTENT = "INDRATRACE_CAPTURE_CONTENT"
 #: without ever raising. Truthy: 1/true/yes/on. See `resolve_debug`.
 ENV_DEBUG = "INDRATRACE_DEBUG"
 
+# The three env vars 1.0 removed. Still *named* here — not to honor them, but so
+# that a process which still sets one is told it is being ignored rather than
+# silently getting different telemetry than it configured.
+ENV_PRODUCT = "INDRATRACE_PRODUCT"
+ENV_ENV = "INDRATRACE_ENV"
+ENV_KEY = "INDRATRACE_KEY"  # the pre-1.0 deprecated alias for ENV_API_KEY
+
 #: Env values that read as True. Anything else (incl. unset) is False.
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 #: Auth header carrying the API key (docs/conventions.md § Transport). The wire
-#: header name is a fixed transport contract and does NOT change with the
-#: `ingest_key` → `api_key` parameter rename (v0.5.0).
+#: header name is a fixed transport contract: it did not change with the
+#: `ingest_key` → `api_key` rename (v0.5.0) and does not change in 1.0 either.
 API_KEY_HEADER = "x-indratrace-key"
 
-#: Deprecated alias for `API_KEY_HEADER`; kept so existing imports don't break.
-INGEST_KEY_HEADER = API_KEY_HEADER
+#: What every actionable message ends with. The key is created with the product,
+#: and shown once — that is the sentence a stuck user actually needs.
+_REGISTER_HINT = (
+    "Register the product in your IndraTrace workspace, copy its key, and call "
+    "init_observability(api_key=...)."
+)
+
+#: Raised when no key can be resolved. The failure this replaces was a silent
+#: stream of 401s from the gateway that the customer never saw.
+MISSING_API_KEY_MESSAGE = (
+    "No API key. Set INDRATRACE_API_KEY or pass api_key=... — create one under "
+    "Products in your IndraTrace workspace; the key is shown once when the "
+    "product is created."
+)
+
+#: The parameters 1.0 removed from `init_observability`, and what to do instead.
+#: `init_observability` swallows them into `**removed` purely so it can raise
+#: *these* messages rather than a bare `TypeError` that explains nothing. Order
+#: is the order they are checked in.
+REMOVED_PARAMS: dict[str, str] = {
+    "product": (
+        "`product` was removed in 1.0 — the API key decides the product (and "
+        "the environment). " + _REGISTER_HINT
+    ),
+    "env": (
+        "`env` was removed in 1.0 — the API key decides the environment: a key "
+        "belongs to one product in one environment, and the environment is "
+        "chosen when the product is registered. " + _REGISTER_HINT
+    ),
+    "endpoint": (
+        "`endpoint` was removed in 1.0 — the SDK ships to the IndraTrace ingest "
+        "gateway, and the API key is what routes your telemetry once it lands. "
+        "Drop the argument and call init_observability(api_key=...)."
+    ),
+    "ingest_key": (
+        "`ingest_key` was removed in 1.0 — it was the pre-0.5 name for "
+        "`api_key`. Call init_observability(api_key=...)."
+    ),
+}
+
+#: The env vars 1.0 removed. Setting one is **ignored**, with one warning each —
+#: same wording idea as `REMOVED_PARAMS`, because it is the same mistake made in
+#: the environment instead of in code.
+REMOVED_ENV_VARS: dict[str, str] = {
+    ENV_PRODUCT: (
+        "INDRATRACE_PRODUCT was removed in 1.0 and is ignored — the API key "
+        "decides the product (and the environment). " + _REGISTER_HINT
+    ),
+    ENV_ENV: (
+        "INDRATRACE_ENV was removed in 1.0 and is ignored — the API key decides "
+        "the environment: a key belongs to one product in one environment, and "
+        "the environment is chosen when the product is registered. " + _REGISTER_HINT
+    ),
+    ENV_KEY: (
+        "INDRATRACE_KEY was removed in 1.0 and is ignored — it was the "
+        "deprecated alias for INDRATRACE_API_KEY. Set INDRATRACE_API_KEY "
+        "instead."
+    ),
+}
 
 
 @dataclass(frozen=True)
 class ObsConfig:
-    """Fully resolved configuration. Every field has a value by construction."""
+    """Fully resolved configuration.
 
-    product: str
-    env: str
-    endpoint: str
-    service_name: str
-    service_version: str
-    tenant_id: str = DEFAULT_TENANT_ID
-    api_key: str | None = None
+    Deliberately small: a credential, where to send, and two labels describing
+    the deployable. Nothing here identifies the *customer's* product, tenant or
+    environment — the gateway derives those from `api_key` (ADR 0009).
+    """
+
+    api_key: str
+    endpoint: str = DEFAULT_ENDPOINT
+    #: `None` means "let OpenTelemetry decide" — its own default respects
+    #: `OTEL_SERVICE_NAME`/`OTEL_RESOURCE_ATTRIBUTES` and otherwise yields
+    #: `unknown_service`. Stamping a value of our own here would clobber that.
+    service_name: str | None = None
+    service_version: str = DEFAULT_SERVICE_VERSION
     export_timeout_seconds: float = DEFAULT_EXPORT_TIMEOUT_SECONDS
-
-    @property
-    def ingest_key(self) -> str | None:
-        """Deprecated alias for `api_key` (renamed in v0.5.0)."""
-        return self.api_key
 
     @property
     def traces_endpoint(self) -> str:
@@ -88,9 +183,7 @@ class ObsConfig:
 
     @property
     def headers(self) -> dict[str, str]:
-        """Export headers. Empty when no API key is configured."""
-        if not self.api_key:
-            return {}
+        """Export headers. Always carries the key — 1.0 has no keyless mode."""
         return {API_KEY_HEADER: self.api_key}
 
 
@@ -102,76 +195,57 @@ def _first(*values: str | None) -> str | None:
     return None
 
 
-def _resolve_api_key(
-    api_key: str | None,
-    ingest_key: str | None,
-) -> str | None:
-    """Resolve the API key, honoring the deprecated `ingest_key` alias.
+def warn_about_removed_env_vars() -> None:
+    """Warn once per removed `INDRATRACE_*` var that is set, then ignore it.
 
-    Precedence: `api_key` arg > `ingest_key` arg > `INDRATRACE_API_KEY` env >
-    `INDRATRACE_KEY` env. A single `DeprecationWarning` is emitted whenever the
-    deprecated arg is passed or the deprecated env var supplies the value —
-    including when `api_key` also wins (the caller still passed a deprecated
-    name and should learn to drop it).
+    A `UserWarning`, not a `DeprecationWarning`: these names are gone, not going,
+    and `DeprecationWarning` is hidden by default outside `__main__` — which is
+    exactly where a server process sets its environment. The whole point is that
+    the operator finds out their variable stopped doing anything.
+
+    "Set" means set to a non-empty value: an empty `INDRATRACE_PRODUCT` never
+    configured anything, so warning about it would be noise (same emptiness rule
+    as `_first`).
     """
-    env_api_key = os.getenv(ENV_API_KEY)
-    env_ingest_key = os.getenv(ENV_KEY)
+    for name, message in REMOVED_ENV_VARS.items():
+        if os.getenv(name):
+            warnings.warn(message, UserWarning, stacklevel=3)
 
-    # The deprecated surface is "in use" if the caller passed the old arg, or if
-    # the old env var is the source that actually supplies the value (no newer
-    # source shadows it). Both cases earn exactly one warning.
-    deprecated_arg_passed = ingest_key is not None
-    deprecated_env_is_source = (
-        not api_key and not ingest_key and not env_api_key and bool(env_ingest_key)
-    )
-    if deprecated_arg_passed or deprecated_env_is_source:
-        warnings.warn(
-            "ingest_key is deprecated; use api_key "
-            "(env: INDRATRACE_KEY → INDRATRACE_API_KEY)",
-            DeprecationWarning,
-            stacklevel=3,
-        )
 
-    return _first(api_key, ingest_key, env_api_key, env_ingest_key)
+def _resolve_api_key(api_key: str | None) -> str:
+    """`api_key` arg > `INDRATRACE_API_KEY` env > raise.
+
+    Raises:
+        IndraTraceConfigError: when neither source supplies a non-empty key. An
+            empty string is "no key", not a key.
+    """
+    resolved = _first(api_key, os.getenv(ENV_API_KEY))
+    if not resolved:
+        raise IndraTraceConfigError(MISSING_API_KEY_MESSAGE)
+    # Presence only — no format check. A key that does not start with `it_` is
+    # still sent: the gateway is the authority on whether a key is valid, and a
+    # second authority here could only ever disagree with it (and would reject
+    # any future key format the platform introduces).
+    return resolved
 
 
 def resolve_config(
-    product: str | None = None,
-    env: str | None = None,
     api_key: str | None = None,
-    endpoint: str | None = None,
     service_name: str | None = None,
     service_version: str | None = None,
-    tenant_id: str | None = None,
-    ingest_key: str | None = None,
 ) -> ObsConfig:
-    """Resolve config with precedence: explicit args > env vars > defaults.
-
-    `ingest_key` is a deprecated alias for `api_key` (renamed in v0.5.0). It is
-    still accepted; passing it (or the `INDRATRACE_KEY` env var) emits a single
-    `DeprecationWarning`. If both `api_key` and `ingest_key` are given, `api_key`
-    wins — the warning still fires.
+    """Resolve config. The API key is required; everything else is optional.
 
     Raises:
-        ValueError: if `product` resolves to nothing. It is required by the
-            attribute contract and there is no sane default for it.
+        IndraTraceConfigError: if no API key is given and `INDRATRACE_API_KEY`
+            is unset or empty.
     """
-    resolved_product = _first(product, os.getenv(ENV_PRODUCT))
-    if not resolved_product:
-        raise ValueError(
-            "product is required: pass product= to init_observability() "
-            f"or set {ENV_PRODUCT}"
-        )
-
     return ObsConfig(
-        product=resolved_product,
-        env=_first(env, os.getenv(ENV_ENV)) or DEFAULT_ENV,
-        endpoint=_first(endpoint, os.getenv(ENV_ENDPOINT)) or DEFAULT_ENDPOINT,
-        # The deployable's name; defaults to the product it belongs to.
-        service_name=service_name or resolved_product,
+        api_key=_resolve_api_key(api_key),
+        # Developer override only (see ENV_ENDPOINT); customers never set it.
+        endpoint=_first(os.getenv(ENV_ENDPOINT)) or DEFAULT_ENDPOINT,
+        service_name=service_name or None,
         service_version=service_version or DEFAULT_SERVICE_VERSION,
-        tenant_id=tenant_id or DEFAULT_TENANT_ID,
-        api_key=_resolve_api_key(api_key, ingest_key),
         # Read at call time, not bound as a dataclass default, so the test
         # suite can shrink it and not pay a real export backoff per teardown.
         export_timeout_seconds=DEFAULT_EXPORT_TIMEOUT_SECONDS,
@@ -215,19 +289,28 @@ def resolve_debug(debug: bool | None = None) -> bool:
     return raw.strip().lower() in _TRUTHY
 
 
+#: The three the **gateway** owns and the SDK must never send (platform P80,
+#: `ingest/stamp.py::STAMPED_ATTRS`). Named here so the test that asserts their
+#: absence from the Resource reads from the same list the docstring cites — the
+#: SDK-side twin of the platform's grep that `stamp.py` is their only writer.
+GATEWAY_STAMPED_ATTRS = ("product", "deployment.environment", "tenant.id")
+
+
 def build_resource(cfg: ObsConfig) -> Resource:
     """The Resource stamped on every signal (docs/conventions.md).
 
-    `Resource.create` merges these over the OTel SDK defaults, so the standard
-    `telemetry.sdk.*` attributes survive alongside our `telemetry.sdk.wrapper`.
+    Carries what the SDK legitimately knows: the deployable's name and version,
+    plus `telemetry.sdk.*` (ours and OpenTelemetry's own — `Resource.create`
+    merges over the SDK defaults, so the standard set survives).
+
+    It carries **none** of `GATEWAY_STAMPED_ATTRS`. The gateway drops the
+    client's values for those and appends the key's, so sending them would be
+    sending a claim we already know is discarded (ADR 0009).
     """
-    return Resource.create(
-        {
-            "service.name": cfg.service_name,
-            "service.version": cfg.service_version,
-            "product": cfg.product,
-            "deployment.environment": cfg.env,
-            "tenant.id": cfg.tenant_id,
-            "telemetry.sdk.wrapper": f"indratrace/{__version__}",
-        }
-    )
+    attributes: dict[str, str] = {
+        "service.version": cfg.service_version,
+        "telemetry.sdk.wrapper": f"indratrace/{__version__}",
+    }
+    if cfg.service_name:
+        attributes["service.name"] = cfg.service_name
+    return Resource.create(attributes)

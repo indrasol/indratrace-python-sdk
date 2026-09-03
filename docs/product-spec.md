@@ -10,18 +10,14 @@ First consumers: Indrasol's own products and the platform itself as product #0
 (dogfood). Long-term: public package, anyone can subscribe to the hosted
 platform for a key (see ADR 0002).
 
-## The entire developer experience (v0.1)
+## The entire developer experience (v1.0)
 
 ```python
 from indratrace import init_observability, trace_agent, trace_tool
 
-# once, at app startup
-init_observability(
-    product="compliance",
-    env="prod",
-    api_key="obs_live_...",             # from the platform's Product Registry
-    # endpoint defaults to INDRATRACE_ENDPOINT env var
-)
+# once, at app startup — the key is the whole configuration (ADR 0009):
+# it decides the product, its environment, and the tenant.
+init_observability(api_key="it_live_...")
 
 @trace_agent("compliance-checker")      # wraps a whole agent request
 async def run(query): ...

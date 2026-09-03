@@ -24,7 +24,8 @@ import pytest
 from indratrace import init_observability, trace_agent, trace_tool
 from indratrace.init import _get_provider, _reset_for_tests
 
-OTLP_ENDPOINT = "http://localhost:4318"
+from .conftest import HARNESS_API_KEY, OTLP_ENDPOINT
+
 CLICKHOUSE_URL = "http://localhost:8123"
 CLICKHOUSE_AUTH = ("otel", "otel")
 
@@ -69,7 +70,12 @@ pytestmark = [
 
 
 @pytest.fixture
-def product() -> str:
+def service() -> str:
+    """A unique `service.name` per run — the SDK's own discriminator.
+
+    Was a unique `product` before 1.0; the SDK no longer sends a product (the
+    gateway stamps it from the key, ADR 0009) and this harness has none in front.
+    """
     return f"genai-{uuid.uuid4().hex[:12]}"
 
 
@@ -90,19 +96,17 @@ def wait_for_rows(sql: str) -> list[list[str]]:
     return []
 
 
-def _init(product: str) -> None:
+def _init(service: str) -> None:
     init_observability(
-        product=product,
-        env="dev",
-        endpoint=OTLP_ENDPOINT,
-        api_key="dev-local",
+        api_key=HARNESS_API_KEY,
+        service_name=service,
         instrument_fastapi=False,
     )
     assert _get_provider() is not None
 
 
-def _model_span_rows(product: str) -> list[list[str]]:
-    """Model spans for `product`: name, ids, lineage, and token counts.
+def _model_span_rows(service: str) -> list[list[str]]:
+    """Model spans for `service`: name, ids, lineage, and token counts.
 
     The instrumentor names the span `anthropic.chat`; filter on the presence of
     the token attribute so we assert on the model span, not the agent/tool ones.
@@ -113,16 +117,16 @@ def _model_span_rows(product: str) -> list[list[str]]:
         "SpanAttributes['gen_ai.usage.input_tokens'], "
         "SpanAttributes['gen_ai.usage.output_tokens'] "
         "FROM otel.otel_traces "
-        f"WHERE ResourceAttributes['product'] = '{product}' "
+        f"WHERE ResourceAttributes['service.name'] = '{service}' "
         "AND mapContains(SpanAttributes, 'gen_ai.usage.input_tokens') "
         "FORMAT TSV"
     )
 
 
-def test_non_streaming_claude_call_lands_a_model_span(product: str) -> None:
+def test_non_streaming_claude_call_lands_a_model_span(service: str) -> None:
     import anthropic
 
-    _init(product)
+    _init(service)
     provider = _get_provider()
     client = anthropic.Anthropic()
 
@@ -147,14 +151,14 @@ def test_non_streaming_claude_call_lands_a_model_span(product: str) -> None:
     all_rows = wait_for_rows(
         "SELECT SpanName, SpanId, ParentSpanId, TraceId "
         "FROM otel.otel_traces "
-        f"WHERE ResourceAttributes['product'] = '{product}' FORMAT TSV"
+        f"WHERE ResourceAttributes['service.name'] = '{service}' FORMAT TSV"
     )
-    assert all_rows, f"no spans for product={product}"
+    assert all_rows, f"no spans for service={service}"
     names = {r[0] for r in all_rows}
     assert "agent token-probe" in names
     assert "tool ask_model" in names
 
-    model_rows = _model_span_rows(product)
+    model_rows = _model_span_rows(service)
     assert len(model_rows) == 1, f"expected one model span, got {model_rows}"
     (name, span_id, parent_id, trace_id, provider_name, in_tok, out_tok) = model_rows[0]
 
@@ -174,11 +178,11 @@ def test_non_streaming_claude_call_lands_a_model_span(product: str) -> None:
     assert parent_id in by_id
 
 
-def test_streaming_claude_call_still_captures_usage(product: str) -> None:
+def test_streaming_claude_call_still_captures_usage(service: str) -> None:
     """The hard case: usage arrives only in the final streamed event."""
     import anthropic
 
-    _init(product)
+    _init(service)
     provider = _get_provider()
     client = anthropic.Anthropic()
 
@@ -201,7 +205,7 @@ def test_streaming_claude_call_still_captures_usage(product: str) -> None:
 
     assert provider.force_flush(timeout_millis=15_000), "spans never left the SDK"
 
-    model_rows = _model_span_rows(product)
+    model_rows = _model_span_rows(service)
     assert len(model_rows) == 1, (
         f"streaming produced no model span with usage; got {model_rows}"
     )

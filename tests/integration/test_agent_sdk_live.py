@@ -28,7 +28,8 @@ import pytest
 from indratrace import init_observability
 from indratrace.init import _get_provider, _reset_for_tests
 
-OTLP_ENDPOINT = "http://localhost:4318"
+from .conftest import HARNESS_API_KEY, OTLP_ENDPOINT
+
 CLICKHOUSE_URL = "http://localhost:8123"
 CLICKHOUSE_AUTH = ("otel", "otel")
 
@@ -74,7 +75,12 @@ pytestmark = [
 
 
 @pytest.fixture
-def product() -> str:
+def service() -> str:
+    """A unique `service.name` per run — the SDK's own discriminator.
+
+    Was a unique `product` before 1.0; the SDK no longer sends a product (the
+    gateway stamps it from the key, ADR 0009) and this harness has none in front.
+    """
     return f"agentsdk-{uuid.uuid4().hex[:12]}"
 
 
@@ -116,7 +122,7 @@ def wait_for_rows(
     return rows
 
 
-def test_real_agent_run_lands_the_full_tree(product: str) -> None:
+def test_real_agent_run_lands_the_full_tree(service: str) -> None:
     from claude_agent_sdk import (
         ClaudeAgentOptions,
         create_sdk_mcp_server,
@@ -125,10 +131,8 @@ def test_real_agent_run_lands_the_full_tree(product: str) -> None:
     )
 
     init_observability(
-        product=product,
-        env="dev",
-        endpoint=OTLP_ENDPOINT,
-        api_key="dev-local",
+        api_key=HARNESS_API_KEY,
+        service_name=service,
         instrument_fastapi=False,
     )
     provider = _get_provider()
@@ -166,12 +170,13 @@ def test_real_agent_run_lands_the_full_tree(product: str) -> None:
         "SpanAttributes['agent.framework'], "
         "SpanAttributes['gen_ai.usage.output_tokens'] "
         "FROM otel.otel_traces "
-        f"WHERE ResourceAttributes['product'] = '{product}' "
+        f"WHERE ResourceAttributes['service.name'] = '{service}' "
         "AND SpanAttributes['agent.framework'] = 'claude-agent-sdk' FORMAT TSV",
-        predicate=lambda rows: any(r[4] == "agent" for r in rows)
-        and any(r[4] == "turn" for r in rows),
+        predicate=lambda rows: (
+            any(r[4] == "agent" for r in rows) and any(r[4] == "turn" for r in rows)
+        ),
     )
-    assert rows, f"no agent-sdk spans for product={product}"
+    assert rows, f"no agent-sdk spans for service={service}"
 
     kinds = {r[4] for r in rows}
     assert "agent" in kinds, f"no agent span; kinds={kinds}"
@@ -200,7 +205,7 @@ def test_real_agent_run_lands_the_full_tree(product: str) -> None:
     tool_rows = wait_for_rows(
         "SELECT SpanName, SpanAttributes['tool.mcp_server'] "
         "FROM otel.otel_traces "
-        f"WHERE ResourceAttributes['product'] = '{product}' "
+        f"WHERE ResourceAttributes['service.name'] = '{service}' "
         "AND SpanAttributes['indratrace.span.kind'] = 'tool' FORMAT TSV",
         predicate=lambda rows: any("echo" in r[0] for r in rows),
     )

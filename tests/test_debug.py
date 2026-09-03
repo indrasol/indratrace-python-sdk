@@ -17,7 +17,11 @@ from collections.abc import Iterator
 import pytest
 
 from indratrace import init_observability
-from indratrace.config import ENV_DEBUG, resolve_debug
+from indratrace.config import (
+    ENV_DEBUG,
+    GATEWAY_STAMPED_ATTRS,
+    resolve_debug,
+)
 from indratrace.init import _reset_for_tests
 
 # Nothing listens here; every export against it fails fast (conftest shrinks the
@@ -52,16 +56,12 @@ class TestResolveDebug:
         assert resolve_debug(False) is False
 
     @pytest.mark.parametrize("raw", ["1", "true", "TRUE", "yes", "on", " On "])
-    def test_env_truthy_values(
-        self, raw: str, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_truthy_values(self, raw: str, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(ENV_DEBUG, raw)
         assert resolve_debug() is True
 
     @pytest.mark.parametrize("raw", ["0", "false", "no", "off", "", "maybe"])
-    def test_env_falsey_values(
-        self, raw: str, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_falsey_values(self, raw: str, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(ENV_DEBUG, raw)
         assert resolve_debug() is False
 
@@ -71,17 +71,13 @@ class TestOffByDefault:
 
     def test_no_console_handler_attached_without_debug(self) -> None:
         before = list(logging.getLogger("indratrace").handlers)
-        init_observability(
-            product="quiet", endpoint=DEAD_ENDPOINT, instrument_fastapi=False
-        )
+        init_observability(api_key="it_test_quiet", instrument_fastapi=False)
         assert logging.getLogger("indratrace").handlers == before
 
     def test_debug_false_prints_nothing_to_stderr(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        init_observability(
-            product="quiet", endpoint=DEAD_ENDPOINT, instrument_fastapi=False
-        )
+        init_observability(api_key="it_test_quiet", instrument_fastapi=False)
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err == ""
@@ -93,8 +89,7 @@ class TestConsoleHandler:
     def test_debug_attaches_a_console_handler(self) -> None:
         before = len(logging.getLogger("indratrace").handlers)
         init_observability(
-            product="demo",
-            endpoint=DEAD_ENDPOINT,
+            api_key="it_test_demo",
             instrument_fastapi=False,
             debug=True,
         )
@@ -103,8 +98,7 @@ class TestConsoleHandler:
     def test_reset_detaches_the_debug_handler(self) -> None:
         before = len(logging.getLogger("indratrace").handlers)
         init_observability(
-            product="demo",
-            endpoint=DEAD_ENDPOINT,
+            api_key="it_test_demo",
             instrument_fastapi=False,
             debug=True,
         )
@@ -113,12 +107,9 @@ class TestConsoleHandler:
         _reset_for_tests()
         assert len(logging.getLogger("indratrace").handlers) == before
 
-    def test_debug_writes_to_stderr(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_debug_writes_to_stderr(self, capsys: pytest.CaptureFixture[str]) -> None:
         init_observability(
-            product="demo",
-            endpoint=DEAD_ENDPOINT,
+            api_key="it_test_demo",
             instrument_fastapi=False,
             debug=True,
         )
@@ -139,8 +130,7 @@ class TestConsoleHandler:
         original_level = sdk_logger.level
         try:
             init_observability(
-                product="demo",
-                endpoint=DEAD_ENDPOINT,
+                api_key="it_test_demo",
                 instrument_fastapi=False,
                 debug=True,
             )
@@ -166,8 +156,7 @@ class TestConsoleHandler:
         original_level = sdk_logger.level
         try:
             init_observability(
-                product="demo",
-                endpoint=DEAD_ENDPOINT,
+                api_key="it_test_demo",
                 instrument_fastapi=False,
                 debug=True,
             )
@@ -182,26 +171,37 @@ class TestBannerContent:
     """The banner is the operator's answer to 'what did init actually do?'."""
 
     def _banner(self, records: list[logging.LogRecord], **kwargs: object) -> str:
+        kwargs.setdefault("api_key", "it_test_probe")
         init_observability(
-            product="probe",
-            env="staging",
-            endpoint=DEAD_ENDPOINT,
+            service_name="probe",
+            service_version="9.9.9",
             instrument_fastapi=False,
             debug=True,
             **kwargs,
         )
         return "\n".join(console_lines(records))
 
-    def test_banner_names_version_product_env_endpoint(
+    def test_banner_names_version_service_and_endpoint(
         self, sdk_log: list[logging.LogRecord]
     ) -> None:
         from indratrace.version import __version__
 
         text = self._banner(sdk_log)
         assert f"IndraTrace SDK v{__version__}" in text
-        assert "product=probe" in text
-        assert "env=staging" in text
+        assert "service=probe" in text
+        assert "version=9.9.9" in text
         assert DEAD_ENDPOINT in text
+
+    def test_banner_says_the_key_decides_identity(
+        self, sdk_log: list[logging.LogRecord]
+    ) -> None:
+        """1.0 sends no product/env/tenant, so the banner cannot report them —
+        it must say who does, or an operator reads the gap as a bug (ADR 0009)."""
+        text = self._banner(sdk_log)
+        assert "identity:" in text
+        for attribute in GATEWAY_STAMPED_ATTRS:
+            assert attribute in text
+        assert "from your API key" in text
 
     def test_banner_reports_api_key_and_capture_content_state(
         self, sdk_log: list[logging.LogRecord]
@@ -216,8 +216,7 @@ class TestBannerContent:
         """FastAPI is off here, so the banner must say so with a reason; the
         GenAI providers are dev deps, so they show as enabled."""
         init_observability(
-            product="probe",
-            endpoint=DEAD_ENDPOINT,
+            api_key="it_test_probe",
             instrument_fastapi=False,
             debug=True,
         )
@@ -233,8 +232,7 @@ class TestBannerContent:
         """v0.6: an operator must be able to see whether Django/Flask/loguru came
         on — 'why are there no HTTP spans?' is answered by this line."""
         init_observability(
-            product="probe",
-            endpoint=DEAD_ENDPOINT,
+            api_key="it_test_probe",
             debug=True,
         )
         text = "\n".join(console_lines(sdk_log))
@@ -261,8 +259,7 @@ class TestBannerContent:
 
         monkeypatch.setattr(builtins, "__import__", no_anthropic)
         init_observability(
-            product="probe",
-            endpoint=DEAD_ENDPOINT,
+            api_key="it_test_probe",
             instrument_fastapi=False,
             debug=True,
         )
@@ -277,8 +274,7 @@ class TestAudibleExport:
         self, sdk_log: list[logging.LogRecord]
     ) -> None:
         init_observability(
-            product="probe",
-            endpoint=DEAD_ENDPOINT,
+            api_key="it_test_probe",
             instrument_fastapi=False,
             debug=True,
         )
@@ -293,8 +289,7 @@ class TestAudibleExport:
     def test_init_never_raises_with_debug_on_and_a_dead_endpoint(self) -> None:
         """The whole point: audible, never loud. This must not raise."""
         init_observability(
-            product="probe",
-            endpoint=DEAD_ENDPOINT,
+            api_key="it_test_probe",
             instrument_fastapi=False,
             debug=True,
         )  # no exception == pass
@@ -305,9 +300,7 @@ class TestEnvVar:
         self, sdk_log: list[logging.LogRecord], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv(ENV_DEBUG, "1")
-        init_observability(
-            product="probe", endpoint=DEAD_ENDPOINT, instrument_fastapi=False
-        )
+        init_observability(api_key="it_test_probe", instrument_fastapi=False)
         assert any("IndraTrace SDK" in line for line in console_lines(sdk_log))
 
     def test_explicit_false_beats_the_env_var(
@@ -315,8 +308,7 @@ class TestEnvVar:
     ) -> None:
         monkeypatch.setenv(ENV_DEBUG, "1")
         init_observability(
-            product="probe",
-            endpoint=DEAD_ENDPOINT,
+            api_key="it_test_probe",
             instrument_fastapi=False,
             debug=False,
         )

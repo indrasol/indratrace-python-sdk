@@ -45,6 +45,26 @@ Two markers opt into heavier runs:
 Keep the offline suite fast (under ~15s) — it shrinks the export timeout so a
 refused connection doesn't cost real backoff on teardown.
 
+### Running against a local stack — `INDRATRACE_ENDPOINT`
+
+The SDK has no `endpoint` parameter: it ships to the IndraTrace ingest gateway,
+and the API key routes the telemetry once it lands (ADR 0009). A customer never
+chooses a host.
+
+For **IndraTrace development** there is one undocumented escape hatch — the
+`INDRATRACE_ENDPOINT` env var — so you can point the SDK at a gateway or
+Collector running on your own machine:
+
+```bash
+export INDRATRACE_ENDPOINT="http://localhost:4318"   # e.g. the dev/ harness
+```
+
+It overrides `config.DEFAULT_ENDPOINT` and is what `tests/integration/conftest.py`
+sets for the harness suite. It is deliberately absent from the README and from
+`docs/conventions.md`'s Transport section — please keep it that way. If a
+customer needs to send telemetry somewhere else, that is a product decision, not
+an env var we mention in passing.
+
 ## Style & linting
 
 We use [ruff](https://docs.astral.sh/ruff/) for both lint and format, and type

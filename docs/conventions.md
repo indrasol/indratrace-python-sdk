@@ -4,16 +4,45 @@
 repos are compatible if and only if they agree on this file. Change it only via
 a new ADR, and mirror changes in the platform repo.*
 
-## Resource attributes (stamped on EVERY signal by `init_observability`)
+## Resource attributes
+
+A stored row still carries all six attributes below. What changed in SDK v1.0.0
+(ADR 0009 / platform P80) is **who writes them**: three come from the SDK, and
+three are stamped by the ingest gateway from the API key. The wire names are
+unchanged — only their writer moved.
+
+### Sent by the SDK (stamped on EVERY signal by `init_observability`)
 
 | Attribute | Type | Required | Example | Notes |
 |---|---|---|---|---|
-| `service.name` | string | yes | `compliance-api` | OTel standard; the deployable's name. |
-| `service.version` | string | yes | `1.4.2` | Product's own version. |
-| `product` | string | yes | `compliance` | Which of our products. Lowercase, stable, from the platform Product Registry. |
-| `deployment.environment` | string | yes | `prod` \| `staging` \| `dev` | OTel standard key. |
-| `tenant.id` | string | yes | `internal` | Customer/tenant scoping. Internal products use `internal` until multi-tenant. **Do not retrofit later — always present from day one.** |
-| `telemetry.sdk.wrapper` | string | yes | `indratrace/0.1.0` | Set automatically; identifies SDK version on the wire. |
+| `service.name` | string | yes | `compliance-api` | OTel standard; the deployable's name. Optional to the SDK caller (`service_name=`); when unset, OpenTelemetry resolves it (`OTEL_SERVICE_NAME`, else `unknown_service`), so it is always present on the wire. |
+| `service.version` | string | yes | `1.4.2` | Product's own version. Defaults to `0.0.0`. |
+| `telemetry.sdk.wrapper` | string | yes | `indratrace/1.0.0` | Set automatically; identifies SDK version on the wire. |
+
+### Stamped by the gateway — never sent by the SDK
+
+**Amended at SDK v1.0.0** (platform P80; platform ADR 0010 §1 as amended). These
+three rows used to live in the table above and were resolved from
+`init_observability(product=..., env=...)` / `INDRATRACE_PRODUCT` /
+`INDRATRACE_ENV` / a hardwired `internal`.
+
+| Attribute | Type | Required | Example | Written by |
+|---|---|---|---|---|
+| `product` | string | yes | `compliance` | The gateway, from the API key's product. Lowercase, stable, from the platform Product Registry. |
+| `deployment.environment` | string | yes | `prod` \| `staging` \| `dev` | The gateway, from that product's **registered** env (`products.env`). OTel standard key. |
+| `tenant.id` | string | yes | `internal` | The gateway, from the key's org slug. Customer/tenant scoping. |
+
+**Why the SDK sends none of them.** The gateway applies one rule to all three —
+DROP the client's value, APPEND the key's (`ingest/stamp.py::STAMPED_ATTRS`) —
+so a value the SDK put there would be discarded on arrival. Sending it would be
+sending a claim we already know is ignored, and would let a customer believe
+they had configured something they had not. The security property is stated once
+and holds three times: **the payload is a claim, the key is truth.**
+
+The SDK names these three in `config.GATEWAY_STAMPED_ATTRS` and a test asserts
+the Resource contains none of them — the SDK-side twin of the platform's grep
+that `stamp.py` is their only writer. **If the platform adds a fourth stamped
+attribute, both lists move together.**
 
 ## Span conventions
 
@@ -146,11 +175,21 @@ id may be set independently; nesting overrides per key. Propagation is
 
 ## Transport
 
-- OTLP over HTTP (`/v1/traces`, `/v1/logs`, `/v1/metrics`) to
-  `INDRATRACE_ENDPOINT` (e.g. `https://collector.example.com:4318`).
-- Auth header: `x-indratrace-key: <api_key>` (the header name is fixed; the SDK
-  parameter/env that supplies it is `api_key` / `INDRATRACE_API_KEY`, with
-  `ingest_key` / `INDRATRACE_KEY` kept as a deprecated alias).
+**Amended at SDK v1.0.0** (ADR 0009): the destination is the authenticating
+ingest gateway, and it is not configurable by a customer. The auth header is
+unchanged.
+
+- OTLP over HTTP (`/v1/traces`, `/v1/logs`, `/v1/metrics`) to the IndraTrace
+  **ingest gateway** — one constant, `config.DEFAULT_ENDPOINT`, currently
+  `http://localhost:8088` (the dev gateway; it becomes the production ingest
+  hostname at platform deployment arc phase 5). The pre-gateway collector port
+  `:4318` no longer terminates SDK traffic. There is no `endpoint` parameter:
+  the key routes the telemetry once it lands.
+- Auth header: `x-indratrace-key: <api_key>`, on **all three** signal exporters.
+  The header name is a fixed transport contract. The SDK parameter/env that
+  supplies it is `api_key` / `INDRATRACE_API_KEY`; the key is **required**, so
+  there is no headerless export. (`ingest_key` / `INDRATRACE_KEY` were removed
+  in 1.0.)
 - Batch export; on failure, retry per OTel defaults, then drop. Never block.
 
 ## Naming

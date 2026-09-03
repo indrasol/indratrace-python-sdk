@@ -18,6 +18,17 @@ model-call token usage.
 pip install indratrace
 ```
 
+```python
+from indratrace import init_observability
+
+init_observability(api_key="it_live_...")
+```
+
+That is the whole integration. **The API key is the only thing you configure** —
+it identifies your product, its environment and your workspace, all decided when
+you register the product and copy its key. There is nothing else to set, and no
+endpoint to point at.
+
 Two words to know up front:
 
 - A **span** is one timed step — a web request, a database call, one model call.
@@ -37,8 +48,8 @@ from fastapi import FastAPI
 
 from indratrace import init_observability, trace_agent, trace_tool
 
-# Once, at app startup.
-init_observability(product="my-app", env="prod", api_key="...")
+# Once, at app startup. The key is the whole configuration.
+init_observability(api_key="it_live_...")
 
 app = FastAPI()  # every HTTP request becomes a span, automatically
 
@@ -120,7 +131,7 @@ from fastapi import FastAPI
 
 from indratrace import init_observability
 
-init_observability(product="orders-api", env="prod", api_key="...")
+init_observability(api_key="it_live_...")
 
 app = FastAPI()
 
@@ -179,7 +190,7 @@ from indratrace import init_observability
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "myproject.settings")
 
-init_observability(product="my-django-app", env="prod", api_key="...")  # BEFORE ↓
+init_observability(api_key="it_live_...")            # BEFORE ↓
 
 application = get_wsgi_application()
 ```
@@ -213,7 +224,7 @@ from flask import Flask
 
 from indratrace import init_observability, instrument_flask_app
 
-init_observability(product="my-flask-app", env="prod", api_key="...")
+init_observability(api_key="it_live_...")
 
 app = Flask(__name__)
 instrument_flask_app(app)          # ← now every request is a span
@@ -241,7 +252,7 @@ from loguru import logger
 
 from indratrace import init_observability
 
-init_observability(product="my-app", api_key="...")
+init_observability(api_key="it_live_...")
 
 logger.info("this ships to IndraTrace")          # INFO and above
 logger.exception("so does this, with its stack trace")
@@ -265,7 +276,7 @@ from loguru import logger
 
 from indratrace import bridge_loguru, init_observability
 
-init_observability(product="my-app", api_key="...")
+init_observability(api_key="it_live_...")
 
 logger.remove()                    # your own setup — drops our sink too
 logger.add("app.log", level="INFO")
@@ -306,7 +317,7 @@ from claude_agent_sdk import query, ClaudeAgentOptions
 
 from indratrace import init_observability
 
-init_observability(product="my-agent", api_key="...")   # once, at startup
+init_observability(api_key="it_live_...")   # once, at startup
 
 # No decorators. This whole run is traced — agent → turns → tools → tokens.
 async for message in query(prompt="Summarize today's incidents and file a ticket"):
@@ -336,7 +347,7 @@ import anthropic
 
 from indratrace import init_observability, trace_agent, trace_tool
 
-init_observability(product="my-app", api_key="...")
+init_observability(api_key="it_live_...")
 client = anthropic.Anthropic()
 
 
@@ -383,7 +394,7 @@ want to see exactly what was sent and returned (the usual case in dev and
 staging, off in production):
 
 ```python
-init_observability(product="my-app", api_key="...", capture_content=True)
+init_observability(api_key="it_live_...", capture_content=True)
 ```
 
 Or set `INDRATRACE_CAPTURE_CONTENT=true` in the environment (an explicit
@@ -446,46 +457,54 @@ trace's id is used when you're inside one. `record_feedback` emits a short
 `feedback.trace_id`, which the platform joins back to the original trace. Called
 inside `session(...)`, the feedback span carries the session/user ids too.
 
-## Bring your own backend
+## Configuration
 
-The SDK emits **standard OTLP over HTTP** — nothing IndraTrace-specific on the
-wire. Point `endpoint=` (or `INDRATRACE_ENDPOINT`) at any OTLP receiver and the
-telemetry flows there, no ingest key required outside the IndraTrace platform:
+There is one required setting, and it is the API key:
 
 ```python
-# Your own OpenTelemetry Collector, Jaeger, Grafana (Tempo/Alloy), SigNoz, …
-init_observability(product="my-app", endpoint="http://otel-collector:4318")
+init_observability(api_key="it_live_...")
 ```
 
 ```bash
-export INDRATRACE_ENDPOINT="http://localhost:4318"   # e.g. a local Jaeger all-in-one
+export INDRATRACE_API_KEY="it_live_..."   # or set it in the environment
 ```
 
-The `x-indratrace-key` header is only sent when you set a key (`api_key=` /
-`INDRATRACE_API_KEY`), which the hosted IndraTrace platform uses to authenticate
-ingest. Your own collector doesn't need it — leave it unset.
+An explicit `api_key=` wins over the environment. If neither is set,
+`init_observability()` raises `IndraTraceConfigError` and says so — it will not
+quietly run un-instrumented, because a missing key is the one mistake you cannot
+see from the outside.
 
-## Configuration
+**Where the key comes from:** register the product in your IndraTrace workspace,
+choose its environment there, and copy the key it shows you. The key is shown
+**once**, at creation. A key belongs to one product in one environment — a
+staging deploy and a production deploy of the same product hold different keys,
+and that is the only difference between them.
 
-Resolution order is **explicit arg > env var > default**:
+Everything else is optional and keyword-only:
 
 | Parameter (`init_observability(...)`) | Env var | Default |
 |---|---|---|
-| `product` | `INDRATRACE_PRODUCT` | *required* — raises/warns if unset |
-| `env` | `INDRATRACE_ENV` | `dev` |
-| `api_key` | `INDRATRACE_API_KEY` | *none* (no auth header sent) |
-| `endpoint` | `INDRATRACE_ENDPOINT` | `http://localhost:4318` |
+| `api_key` | `INDRATRACE_API_KEY` | **required** — raises if unset |
+| `service_name` | — | whatever OpenTelemetry resolves (`OTEL_SERVICE_NAME`, else `unknown_service`) |
+| `service_version` | — | `0.0.0` |
 | `capture_content` | `INDRATRACE_CAPTURE_CONTENT` | `false` (token counts only, no prompt/completion text) |
+| `log_level` | — | *none* — the SDK does not change your root logger |
 | `debug` | `INDRATRACE_DEBUG` | `false` (no diagnostics; see below) |
 
-> `ingest_key` (and `INDRATRACE_KEY`) is the deprecated pre-0.5.0 name for
-> `api_key` — still accepted, but it emits a `DeprecationWarning`. Prefer
-> `api_key` / `INDRATRACE_API_KEY`.
+`service_name` is for one product with several deployables — an API and a
+worker, say. It labels the deployable; it does not name your product, which the
+key already does.
 
 `init_observability()` also takes `instrument_http=False` to turn off web-framework
 auto-instrumentation entirely (it's on by default, and an absent extra is already
 a no-op). Before 0.6.0 this argument was called `instrument_fastapi`; the old name
 still works and now gates all three frameworks.
+
+> **Upgrading from 0.6?** `product`, `env`, `endpoint` and `ingest_key` were
+> removed in 1.0 — the key decides all of them. Passing one raises an error that
+> names it and tells you what to write instead, and `INDRATRACE_PRODUCT` /
+> `INDRATRACE_ENV` / `INDRATRACE_KEY` are ignored with a warning. See the
+> [CHANGELOG](CHANGELOG.md#100--2026-09-03) for a before/after snippet.
 
 Your existing `logging` calls ship automatically once your app is at INFO — the
 usual case under `basicConfig(level=INFO)`, uvicorn, or gunicorn. The SDK does
@@ -494,27 +513,81 @@ configured logging (so it sits at the stdlib default of WARNING), pass
 `log_level="INFO"` to opt in:
 
 ```python
-init_observability(product="my-app", api_key="...", log_level="INFO")
+init_observability(api_key="it_live_...", log_level="INFO")
 ```
 
 Loguru needs none of this: its own level gates its records, and the bridge takes
 everything at INFO and above regardless of the stdlib root level (see
 [Loguru](#loguru)).
 
-The SDK never raises into your app: if the collector is unreachable or the
-config is wrong, it logs one warning and runs un-instrumented. The decorators
-hold to that too — they run your function even when `init_observability()` was
-never called.
+The SDK never raises into your app **after** it is wired: if IndraTrace is
+unreachable or rejects the key, it logs and drops, never blocks a request and
+never raises. The decorators hold to that too — they run your function even when
+`init_observability()` was never called.
 
-## Nothing showing up? Turn on debug
+The one exception is `init_observability()` itself, which raises
+`IndraTraceConfigError` when there is no API key (or when you pass a parameter
+that 1.0 removed). That is a startup mistake, on a line you are looking at — and
+letting it through would only turn into telemetry silently rejected in
+production, which is the failure this replaced.
 
-Because the SDK is **fail-silent** — it never raises or blocks your app — a
-misconfiguration (wrong endpoint, missing extra, unreachable collector) can leave
-your dashboard empty with no obvious clue why. Pass `debug=True` to make those
-failures *audible*:
+## Still waiting for your first span?
+
+You called `init_observability()`, your app is serving traffic, and the dashboard
+is empty. There are only three things it can be — work down the list.
+
+**1. Is `INDRATRACE_API_KEY` actually set in the process that is running?**
+
+```bash
+python -c "import os; print(os.getenv('INDRATRACE_API_KEY') or 'NOT SET')"
+```
+
+Run that the same way you run your app — same shell, same container, same
+systemd unit. A `.env` file your process manager never loads, or a key exported
+in your terminal but not in the container, is the single most common cause. If
+the key is missing entirely, `init_observability()` raises rather than starting
+un-instrumented — so if your app started at all, a key was found *somewhere*.
+The question is whether it is the right one.
+
+**2. Is it the key for the product you expect?**
+
+A key belongs to **one product in one environment**. Your telemetry is arriving
+under whichever product that key names — so a staging key in a production deploy
+means the data is landing in staging, not nowhere. Open Products in your
+IndraTrace workspace and check the environment you are looking at matches the
+key the process is holding. (Keys are shown once at creation; if you cannot tell
+which one a deploy has, rotate it and set the new one deliberately.)
+
+**3. Turn on debug and read the export lines.**
+
+```bash
+export INDRATRACE_DEBUG=1
+```
+
+or pass `debug=True`. It prints a startup banner and turns silent drops into
+visible log lines (details below). Two lines answer almost everything:
+
+- `export ok` — the telemetry left your process and was accepted. If the
+  dashboard is still empty, you are looking at the wrong product or environment;
+  go back to step 2.
+- `export FAILED` — it did not. A `401` means the key was rejected (revoked, or
+  a typo in the value); anything else means the gateway was not reachable from
+  where your app runs.
+
+If all three check out and you still see nothing, the remaining possibility is
+placement, not configuration: `init_observability()` ran too late for
+[Django](#django) or after your `Flask` app object was built —
+see [Flask](#flask). The banner cannot detect either.
+
+## Turning on debug
+
+Because the SDK is **fail-silent** — it never raises or blocks your app once it
+is wired — a missing extra or an unreachable gateway can leave your dashboard
+empty with no obvious clue why. Pass `debug=True` to make those failures
+*audible*:
 
 ```python
-init_observability(product="my-app", api_key="...", debug=True)
+init_observability(api_key="it_live_...", debug=True)
 ```
 
 or set `INDRATRACE_DEBUG=1` in the environment. It prints a startup banner and
@@ -522,11 +595,12 @@ turns silent drops into visible log lines — **without** changing behavior; you
 app still never sees an exception from the SDK.
 
 ```
-indratrace [INFO] indratrace initialized: product=my-app env=dev endpoint=http://localhost:4318
-indratrace [DEBUG] IndraTrace SDK v0.6.0 initialized
-indratrace [DEBUG]   product=my-app env=dev service=my-app
-indratrace [DEBUG]   endpoint=http://localhost:4318 (traces=http://localhost:4318/v1/traces)
+indratrace [INFO] indratrace initialized: service=my-app endpoint=http://localhost:8088
+indratrace [DEBUG] IndraTrace SDK v1.0.0 initialized
+indratrace [DEBUG]   service=my-app version=1.4.2
+indratrace [DEBUG]   endpoint=http://localhost:8088 (traces=http://localhost:8088/v1/traces)
 indratrace [DEBUG]   api_key=set capture_content=off
+indratrace [DEBUG]   identity: product, deployment.environment and tenant.id are stamped by IndraTrace from your API key
 indratrace [DEBUG]   signals: traces + logs + metrics (OTLP/HTTP, batched)
 indratrace [DEBUG]   http[fastapi]: skipped (extra not installed)
 indratrace [DEBUG]   http[django]: enabled
@@ -539,14 +613,15 @@ indratrace [WARNING] indratrace: traces export FAILED (FAILURE) — is the colle
 
 Read it top to bottom:
 
-- The **endpoint** line tells you where telemetry is being sent — the most common
-  fix is a wrong host/port here.
+- The **identity** line is there because the banner reports no product and no
+  environment — deliberately. Your key decides both, and IndraTrace stamps them
+  when the telemetry lands, so there is nothing here for the SDK to report.
 - Each **integration** line says `enabled` or `skipped (reason)`. `skipped (extra
   not installed)` means you need the extra, e.g. `pip install "indratrace[anthropic]"`.
   The `http[…]`, `loguru`, `genai[…]`, and `claude-agent-sdk` lines cover every
   row of the [support matrix](#what-you-get-by-framework).
-- An **`export FAILED`** line means the SDK built fine but the collector didn't
-  accept the data — check that it's running and reachable at the endpoint above.
+- An **`export FAILED`** line means the SDK built fine but IndraTrace didn't
+  accept the data — a `401` is a rejected key, anything else is reachability.
 
 One thing the banner **cannot** tell you: whether `init_observability()` ran
 early enough. `http[django]: enabled` means the middleware was installed, but if

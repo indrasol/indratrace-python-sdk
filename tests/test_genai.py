@@ -48,7 +48,7 @@ def spans() -> Iterator[InMemorySpanExporter]:
     `set_tracer_provider` in the process (architecture.md).
     """
     _reset_for_tests()
-    init_observability(product="genai-tests", instrument_fastapi=False)
+    init_observability(api_key="it_test_genai_tests", instrument_fastapi=False)
     provider = _get_provider()
     assert provider is not None
     exporter = InMemorySpanExporter()
@@ -132,7 +132,7 @@ def _spans_with_content(capture_content: bool) -> InMemorySpanExporter:
     """
     _reset_for_tests()
     init_observability(
-        product="genai-content-tests",
+        api_key="it_test_genai_content_tests",
         instrument_fastapi=False,
         capture_content=capture_content,
     )
@@ -299,7 +299,9 @@ class TestWithoutExtras:
         _reset_for_tests()
         monkeypatch.setattr(builtins, "__import__", no_instrumentors)
         try:
-            init_observability(product="no-genai-extra", instrument_fastapi=False)
+            init_observability(
+                api_key="it_test_no_genai_extra", instrument_fastapi=False
+            )
             assert _get_provider() is not None, "traces must still be wired"
         finally:
             monkeypatch.undo()
@@ -478,7 +480,7 @@ class TestGeminiBedrockWiring:
         instrumentor_cls = self._instrumentor(extra)
 
         _reset_for_tests()
-        init_observability(product=f"{extra}-wiring", instrument_fastapi=False)
+        init_observability(api_key=f"it_test_{extra}", instrument_fastapi=False)
         try:
             assert instrumentor_cls().is_instrumented_by_opentelemetry, (
                 f"{extra} extra installed but init did not instrument it"

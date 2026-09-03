@@ -50,7 +50,7 @@ def spans() -> Iterator[InMemorySpanExporter]:
     `set_tracer_provider` in the process (architecture.md).
     """
     _reset_for_tests()
-    init_observability(product="context-tests", instrument_fastapi=False)
+    init_observability(api_key="it_test_context_tests", instrument_fastapi=False)
     provider = _get_provider()
     assert provider is not None
     exporter = InMemorySpanExporter()
@@ -83,9 +83,7 @@ def emit_raw_span(name: str = "raw-span") -> None:
 
 
 class TestSessionAttributesOnSpans:
-    def test_decorator_spans_carry_both_ids(
-        self, spans: InMemorySpanExporter
-    ) -> None:
+    def test_decorator_spans_carry_both_ids(self, spans: InMemorySpanExporter) -> None:
         @trace_tool
         def tool() -> None: ...
 
@@ -154,9 +152,7 @@ class TestSessionAttributesOnSpans:
         assert span.attributes[USER_ID_KEY] == "only-user"
         assert SESSION_ID_KEY not in span.attributes
 
-    def test_span_outside_session_has_no_ids(
-        self, spans: InMemorySpanExporter
-    ) -> None:
+    def test_span_outside_session_has_no_ids(self, spans: InMemorySpanExporter) -> None:
         with session(session_id="s", user_id="u"):
             emit_raw_span("inside")
         emit_raw_span("outside")
@@ -167,9 +163,7 @@ class TestSessionAttributesOnSpans:
 
 
 class TestNesting:
-    def test_inner_overrides_only_its_key(
-        self, spans: InMemorySpanExporter
-    ) -> None:
+    def test_inner_overrides_only_its_key(self, spans: InMemorySpanExporter) -> None:
         with session(session_id="s-outer", user_id="u-outer"):
             emit_raw_span("outer")
             with session(user_id="u-inner"):
@@ -228,9 +222,7 @@ class TestAsyncPropagation:
 
 
 class TestImperativeHandle:
-    def test_detach_restores_prior_context(
-        self, spans: InMemorySpanExporter
-    ) -> None:
+    def test_detach_restores_prior_context(self, spans: InMemorySpanExporter) -> None:
         handle = session(session_id="mw", user_id="mw-user")
         try:
             emit_raw_span("during")
@@ -244,9 +236,7 @@ class TestImperativeHandle:
         after = by_name(spans, "after")
         assert SESSION_ID_KEY not in after.attributes, "detach did not restore context"
 
-    def test_close_is_an_alias_for_detach(
-        self, spans: InMemorySpanExporter
-    ) -> None:
+    def test_close_is_an_alias_for_detach(self, spans: InMemorySpanExporter) -> None:
         handle = session(session_id="mw2")
         emit_raw_span("during2")
         handle.close()

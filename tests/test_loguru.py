@@ -77,7 +77,7 @@ class TestLoguruShipsWithNoConfiguration:
     """The acceptance criterion: nothing but `init_observability()`."""
 
     def test_loguru_info_ships_as_a_record(self, loguru_logger: Any) -> None:
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         loguru_logger.info("hello from loguru")
@@ -96,7 +96,7 @@ class TestLoguruShipsWithNoConfiguration:
     def test_each_level_maps_to_the_right_severity(
         self, loguru_logger: Any, method: str, severity: str
     ) -> None:
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         getattr(loguru_logger, method)(f"a {method} line")
@@ -105,7 +105,7 @@ class TestLoguruShipsWithNoConfiguration:
 
     def test_loguru_brace_formatting_is_preserved(self, loguru_logger: Any) -> None:
         """`logger.info("hi {}", name)` — loguru's own interpolation, not %-style."""
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         loguru_logger.info("scored {} for {}", 42, "acme")
@@ -113,7 +113,7 @@ class TestLoguruShipsWithNoConfiguration:
         assert "scored 42 for acme" in bodies(exporter)
 
     def test_exception_info_survives(self, loguru_logger: Any) -> None:
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         try:
@@ -135,7 +135,7 @@ class TestTraceCorrelation:
     def test_loguru_log_inside_a_span_carries_trace_context(
         self, loguru_logger: Any
     ) -> None:
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         seen: dict[str, int] = {}
@@ -158,7 +158,7 @@ class TestTraceCorrelation:
     def test_loguru_log_outside_a_span_has_no_trace_context(
         self, loguru_logger: Any
     ) -> None:
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         loguru_logger.info("no span here")
@@ -169,7 +169,7 @@ class TestTraceCorrelation:
 class TestExportThreshold:
     def test_debug_records_are_not_shipped(self, loguru_logger: Any) -> None:
         """Same INFO+ threshold as the stdlib bridge — DEBUG would be a firehose."""
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         loguru_logger.debug("too chatty for the wire")
@@ -180,7 +180,7 @@ class TestExportThreshold:
 
     def test_custom_loguru_levels_map_by_number(self, loguru_logger: Any) -> None:
         """`SUCCESS` (25) has no stdlib name; it must not crash or be dropped."""
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         loguru_logger.success("it worked")
@@ -189,7 +189,7 @@ class TestExportThreshold:
 
     def test_trace_level_is_below_the_threshold(self, loguru_logger: Any) -> None:
         """Loguru's TRACE (5) is below DEBUG — nowhere near the export threshold."""
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         loguru_logger.trace("far too chatty")
@@ -204,7 +204,7 @@ class TestNoDuplication:
     def test_loguru_and_stdlib_each_export_exactly_once(
         self, loguru_logger: Any
     ) -> None:
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         loguru_logger.info("from loguru")
@@ -224,7 +224,7 @@ class TestNoDuplication:
         own console handler print the line a second time (loguru already printed
         it through its own sink).
         """
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         capture_logs()
 
         seen: list[str] = []
@@ -245,9 +245,9 @@ class TestNoDuplication:
 
     def test_reinit_does_not_double_export(self, loguru_logger: Any) -> None:
         """Idempotent across re-init: a reloading worker must not stack sinks."""
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         _reset_for_tests()
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         loguru_logger.info("just once")
@@ -265,7 +265,7 @@ class TestBridgeLoguru:
     def test_removing_all_sinks_unbridges(self, loguru_logger: Any) -> None:
         """The problem `bridge_loguru` exists to solve — pinned, so the README
         keeps telling the truth."""
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         loguru_logger.remove()  # the idiomatic "drop the default stderr sink"
@@ -276,7 +276,7 @@ class TestBridgeLoguru:
     def test_bridge_loguru_puts_it_back(self, loguru_logger: Any) -> None:
         from indratrace import bridge_loguru
 
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         loguru_logger.remove()
@@ -303,7 +303,7 @@ class TestBridgeLoguru:
         try:
             root.setLevel(logging.WARNING)  # an app that never configured logging
 
-            init_observability(product="demo", instrument_http=False)
+            init_observability(api_key="it_test_demo", instrument_http=False)
             exporter = capture_logs()
 
             loguru_logger.remove()
@@ -317,7 +317,7 @@ class TestBridgeLoguru:
     def test_bridge_loguru_is_idempotent(self, loguru_logger: Any) -> None:
         from indratrace import bridge_loguru
 
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         bridge_loguru()
@@ -339,7 +339,7 @@ class TestNoExportLoop:
     ) -> None:
         """Shipping these would feed a loop: a failed export logs an error, which
         becomes another record to export, which fails..."""
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
         exporter = capture_logs()
 
         loguru_logger.bind().patch(
@@ -380,7 +380,7 @@ class TestFailSilent:
 
         monkeypatch.setattr("indratrace.init.enable_loguru_bridge", boom)
 
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
 
         # Traces/logs/metrics all still wired despite the bridge blowing up.
         from indratrace.init import _get_meter_provider, _get_provider
@@ -389,11 +389,9 @@ class TestFailSilent:
         assert _get_logger_provider() is not None
         assert _get_meter_provider() is not None
 
-    def test_a_sink_failure_never_raises_into_the_app(
-        self, loguru_logger: Any
-    ) -> None:
+    def test_a_sink_failure_never_raises_into_the_app(self, loguru_logger: Any) -> None:
         """A log call is not a place to discover an SDK bug."""
-        init_observability(product="demo", instrument_http=False)
+        init_observability(api_key="it_test_demo", instrument_http=False)
 
         provider = _get_logger_provider()
         assert provider is not None

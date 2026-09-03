@@ -8,6 +8,137 @@ PyPI versions are immutable — fixes ship as new versions, never a re-upload.
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-09-03
+
+**The whole integration is one API key.**
+
+```python
+from indratrace import init_observability
+
+init_observability(api_key="it_live_...")
+```
+
+`product`, `env` and `endpoint` are gone. The IndraTrace ingest gateway derives
+your tenant, your product **and** your environment from the key and overwrites
+whatever the payload claims, so those three had nothing left to decide in the
+SDK — and a *missing* key, which used to be a silent stream of 401s you never
+saw, is now a loud error at startup where you are looking.
+
+> **⚠ Release note — built and tagged, deliberately not published yet.**
+> The IndraTrace platform's own API dogfoods through this SDK and still calls
+> `init_observability(product=..., env=...)`. Publishing 1.0.0 to PyPI before
+> that call is migrated would break the platform's self-instrumentation, so
+> `v1.0.0` is tagged here and held. **What unblocks the upload: platform P80b**,
+> which migrates the platform's own call site (and mirrors the new Quickstart).
+> Rithin publishes 1.0.0 once P80b ships in the same window.
+
+### Breaking
+
+- **`init_observability()` takes one positional argument, `api_key`, and it is
+  required.** Everything else is keyword-only. No key in the argument and none
+  in `INDRATRACE_API_KEY` raises `IndraTraceConfigError` (a `ValueError`
+  subclass, exported from `indratrace`) naming the env var and telling you where
+  the key comes from. An empty string counts as no key.
+- **Removed parameters.** Passing one raises `IndraTraceConfigError` with a
+  message that names it and says what to do — never a bare `TypeError`:
+  - `product` — the key decides the product.
+  - `env` — the key decides the environment; it is chosen when you register the
+    product, not per process.
+  - `endpoint` — the SDK ships to the IndraTrace ingest gateway.
+  - `ingest_key` — the pre-0.5 name for `api_key`, deprecated since 0.5.0.
+
+  An unrecognized keyword that is *not* one of these still raises the ordinary
+  `TypeError`.
+- **Removed env vars.** `INDRATRACE_PRODUCT`, `INDRATRACE_ENV` and
+  `INDRATRACE_KEY` are ignored, each with exactly one `UserWarning` saying so.
+  `INDRATRACE_API_KEY` is the supported env form and is unchanged. (A
+  `UserWarning`, not a `DeprecationWarning`, because the latter is hidden by
+  default outside `__main__` — which is exactly where a server sets its
+  environment.)
+- **The SDK no longer sends `product`, `deployment.environment` or `tenant.id`
+  on the Resource.** The gateway drops the client's values for all three and
+  appends the key's, so sending them would be sending a claim we already know is
+  discarded. `service.name`, `service.version` and the `telemetry.sdk.*`
+  attributes are unchanged. A test asserts the Resource carries none of the
+  three — the SDK-side twin of the platform's own guard.
+- **`DEFAULT_ENDPOINT` is now `http://localhost:8088`**, the ingest gateway. The
+  old `http://localhost:4318` was the pre-gateway collector port and no longer
+  terminates SDK traffic.
+- **`service.name` no longer defaults to `product`** (there is no product to
+  default from). Unset, it is whatever OpenTelemetry resolves — `OTEL_SERVICE_NAME`
+  if your app sets it, else `unknown_service`. Pass `service_name=` when one
+  product has several deployables.
+- **Removed the "bring your own backend" story from the README.** Pointing the
+  SDK at your own OTLP receiver was only ever the `endpoint` parameter, which is
+  gone. `INDRATRACE_ENDPOINT` survives as an undocumented override for
+  IndraTrace developers running against a local stack (see `CONTRIBUTING.md`).
+- **Removed `ObsConfig.product` / `.env` / `.tenant_id` / `.ingest_key`**, the
+  `resolve_config(product=..., env=..., endpoint=..., tenant_id=...,
+  ingest_key=...)` parameters, the `DEFAULT_ENV` / `DEFAULT_TENANT_ID`
+  constants, and the `INGEST_KEY_HEADER` alias. These are internal
+  (`indratrace.config`), listed for anyone who reached into them.
+
+### Added
+
+- **`IndraTraceConfigError`**, exported from `indratrace`. A `ValueError`
+  subclass, so a pre-1.0 `except ValueError` around your init still catches it.
+- **`GATEWAY_STAMPED_ATTRS`** in `indratrace.config`: the three attributes the
+  gateway owns, named once so the resource builder, its docstring and the test
+  that asserts their absence all read the same list.
+- The `debug=True` banner reports `service=` / `version=` and an `identity:`
+  line saying the key decides product, environment and tenant — so the missing
+  product line reads as the design, not as a bug.
+
+### Changed
+
+- The startup INFO line is now
+  `indratrace initialized: service=<name> endpoint=<url>`.
+- `init_observability` resolves config **before** its fail-silent block, so a
+  configuration error reaches you. Runtime posture is unchanged (ADR 0003):
+  once wired, exports stay async and batched, and a dead gateway, a rejected key
+  or a missing extra is still logged and dropped, never raised into your app.
+
+### Migration from 0.6
+
+```python
+# Before (0.6)
+init_observability(
+    product="compliance",
+    env="prod",
+    api_key="it_live_...",
+    endpoint="https://ingest.indratrace.io",
+)
+
+# After (1.0)
+init_observability(api_key="it_live_...")
+```
+
+```bash
+# Before
+export INDRATRACE_PRODUCT=compliance
+export INDRATRACE_ENV=prod
+export INDRATRACE_KEY=it_live_...
+
+# After
+export INDRATRACE_API_KEY=it_live_...
+```
+
+The product and the environment now come from the key: register the product in
+your IndraTrace workspace, pick its environment there, and copy the key it
+shows you once. One key per product per environment — a staging deploy and a
+prod deploy of the same product hold different keys, and that is the only
+difference between them.
+
+If you passed `service_name=` or `service_version=`, keep them; they are
+unchanged. If you relied on `service.name` defaulting to your product name,
+pass `service_name="<your product>"` explicitly.
+
+### Decisions
+
+- **ADR 0009 — The key decides identity.** Why the SDK carries credentials and
+  never identity, and what that costs (a breaking 1.0; discovered products
+  retired on the platform).
+
 ## [0.6.0] — 2026-07-12
 
 Closes the two biggest "it just works" gaps: **Loguru** apps were shipping no

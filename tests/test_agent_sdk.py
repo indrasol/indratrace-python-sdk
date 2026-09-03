@@ -106,7 +106,7 @@ def traced_query() -> Iterator[InMemorySpanExporter]:
 
     exporter = InMemorySpanExporter()
 
-    init_observability(product="agent-sdk-tests", instrument_fastapi=False)
+    init_observability(api_key="it_test_agent_sdk_tests", instrument_fastapi=False)
     provider = _get_provider()
     assert provider is not None
     provider.add_span_processor(SimpleSpanProcessor(exporter))
@@ -268,9 +268,7 @@ class TestErrorAndAbandon:
 
 
 class TestComposition:
-    def test_nests_under_trace_agent(
-        self, traced_query: InMemorySpanExporter
-    ) -> None:
+    def test_nests_under_trace_agent(self, traced_query: InMemorySpanExporter) -> None:
         """An agent-sdk run inside a `@trace_agent` nests into that trace."""
         _set_messages(
             traced_query,
@@ -483,7 +481,7 @@ class TestFailSilent:
         _reset_for_tests()
         monkeypatch.setattr(builtins, "__import__", no_agent_sdk)
         try:
-            init_observability(product="no-agent-sdk", instrument_fastapi=False)
+            init_observability(api_key="it_test_no_agent_sdk", instrument_fastapi=False)
             assert _get_provider() is not None, "traces must still be wired"
         finally:
             monkeypatch.undo()

@@ -16,7 +16,16 @@ from indratrace.config import (
     ENV_PRODUCT,
 )
 
+# ENV_KEY / ENV_PRODUCT / ENV_ENV were removed in 1.0 and are no longer honored,
+# but they still WARN when set (config.warn_about_removed_env_vars). So a
+# developer's shell must not leak them into the suite either: a stray
+# INDRATRACE_PRODUCT would make every `recwarn` assertion flaky.
 _INDRATRACE_ENV_VARS = (ENV_ENDPOINT, ENV_API_KEY, ENV_KEY, ENV_PRODUCT, ENV_ENV)
+
+#: 1.0 makes the API key required, so every `init_observability()` in the suite
+#: needs one. Any non-empty string works: the SDK checks presence, never format
+#: (the gateway is the authority), and nothing listens at the test endpoint.
+TEST_API_KEY = "it_test_key"
 
 #: Bound at import, before any fixture shrinks the module global.
 PRODUCTION_EXPORT_TIMEOUT_SECONDS = DEFAULT_EXPORT_TIMEOUT_SECONDS

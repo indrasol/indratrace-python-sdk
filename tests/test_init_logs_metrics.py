@@ -17,7 +17,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.resources import Resource
 
 from indratrace import init_observability, trace_agent
-from indratrace.config import ObsConfig
+from indratrace.config import GATEWAY_STAMPED_ATTRS, ObsConfig
 from indratrace.init import (
     _get_logger_provider,
     _get_meter_provider,
@@ -26,7 +26,7 @@ from indratrace.init import (
 )
 from indratrace.version import __version__
 
-from .conftest import sdk_warnings
+from .conftest import TEST_API_KEY, sdk_warnings
 from .test_config import REQUIRED_RESOURCE_ATTRS
 
 DEAD_ENDPOINT = "http://127.0.0.1:1"  # refuses instantly; nothing listens
@@ -80,20 +80,19 @@ def meter_resource(provider: MeterProvider) -> Resource:
 class TestEndpoints:
     def test_signal_paths(self) -> None:
         cfg = ObsConfig(
-            product="p",
-            env="dev",
-            endpoint="https://collector.example.com:4318/",  # trailing slash tolerated
+            api_key=TEST_API_KEY,
+            endpoint="https://ingest.example.com:8088/",  # trailing slash tolerated
             service_name="s",
             service_version="1",
         )
-        assert cfg.traces_endpoint == "https://collector.example.com:4318/v1/traces"
-        assert cfg.logs_endpoint == "https://collector.example.com:4318/v1/logs"
-        assert cfg.metrics_endpoint == "https://collector.example.com:4318/v1/metrics"
+        assert cfg.traces_endpoint == "https://ingest.example.com:8088/v1/traces"
+        assert cfg.logs_endpoint == "https://ingest.example.com:8088/v1/logs"
+        assert cfg.metrics_endpoint == "https://ingest.example.com:8088/v1/metrics"
 
 
 class TestProvidersAreBuilt:
     def test_all_three_signals_wired(self) -> None:
-        init_observability(product="demo", instrument_fastapi=False)
+        init_observability(api_key="it_test_demo", instrument_fastapi=False)
 
         assert _get_provider() is not None
         assert _get_logger_provider() is not None
@@ -109,7 +108,7 @@ class TestLogBridge:
     """
 
     def test_stdlib_log_ships_as_a_record(self) -> None:
-        init_observability(product="demo", instrument_fastapi=False)
+        init_observability(api_key="it_test_demo", instrument_fastapi=False)
         exporter = capture_logs()
 
         logging.getLogger("some.product.module").info("hello from the product")
@@ -119,7 +118,7 @@ class TestLogBridge:
 
     def test_log_inside_a_span_carries_trace_context(self) -> None:
         """The whole point of the bridge: a log line links back to its trace."""
-        init_observability(product="demo", instrument_fastapi=False)
+        init_observability(api_key="it_test_demo", instrument_fastapi=False)
         exporter = capture_logs()
 
         seen: dict[str, int] = {}
@@ -140,7 +139,7 @@ class TestLogBridge:
         assert record.span_id == seen["span_id"]
 
     def test_log_outside_a_span_has_no_trace_context(self) -> None:
-        init_observability(product="demo", instrument_fastapi=False)
+        init_observability(api_key="it_test_demo", instrument_fastapi=False)
         exporter = capture_logs()
 
         logging.getLogger("product").info("no span here")
@@ -148,7 +147,7 @@ class TestLogBridge:
         assert emitted(exporter, "no span here").log_record.trace_id == 0
 
     def test_debug_records_are_not_shipped(self) -> None:
-        init_observability(product="demo", instrument_fastapi=False)
+        init_observability(api_key="it_test_demo", instrument_fastapi=False)
         exporter = capture_logs()
 
         product = logging.getLogger("chatty.product")
@@ -166,7 +165,7 @@ class TestLogBridge:
     def test_export_path_logs_are_not_shipped(self, noisy_logger: str) -> None:
         """Shipping these would feed a loop: a failed export logs an error,
         which becomes another record to export, which fails..."""
-        init_observability(product="demo", instrument_fastapi=False)
+        init_observability(api_key="it_test_demo", instrument_fastapi=False)
         exporter = capture_logs()
 
         logging.getLogger(noisy_logger).warning("export failed")
@@ -179,7 +178,7 @@ class TestLogBridge:
 
         An operator who wants the SDK's diagnostics must still get them.
         """
-        init_observability(product="demo", instrument_fastapi=False)
+        init_observability(api_key="it_test_demo", instrument_fastapi=False)
 
         seen: list[str] = []
 
@@ -202,11 +201,12 @@ class TestLogBridge:
         """Otherwise every test in the session accumulates another handler."""
         before = len(logging.getLogger().handlers)
 
-        init_observability(product="demo", instrument_fastapi=False)
+        init_observability(api_key="it_test_demo", instrument_fastapi=False)
         assert len(logging.getLogger().handlers) == before + 1
 
         _reset_for_tests()
         assert len(logging.getLogger().handlers) == before
+
 
 class TestRootLoggerLevel:
     """`log_level` is opt-in: without it the SDK never reconfigures logging."""
@@ -218,7 +218,7 @@ class TestRootLoggerLevel:
         original = root.level
         try:
             root.setLevel(logging.WARNING)
-            init_observability(product="demo", instrument_fastapi=False)
+            init_observability(api_key="it_test_demo", instrument_fastapi=False)
             assert root.level == logging.WARNING, "init changed the app's log level"
         finally:
             root.setLevel(original)
@@ -229,7 +229,7 @@ class TestRootLoggerLevel:
         original = root.level
         try:
             root.setLevel(logging.WARNING)
-            init_observability(product="demo", instrument_fastapi=False)
+            init_observability(api_key="it_test_demo", instrument_fastapi=False)
             exporter = capture_logs()
 
             # A fresh logger name with no level of its own, so it inherits root.
@@ -245,7 +245,7 @@ class TestRootLoggerLevel:
         try:
             root.setLevel(logging.WARNING)
             init_observability(
-                product="demo", instrument_fastapi=False, log_level="INFO"
+                api_key="it_test_demo", instrument_fastapi=False, log_level="INFO"
             )
             exporter = capture_logs()
 
@@ -262,7 +262,9 @@ class TestRootLoggerLevel:
         try:
             root.setLevel(logging.WARNING)
             init_observability(
-                product="demo", instrument_fastapi=False, log_level=logging.DEBUG
+                api_key="it_test_demo",
+                instrument_fastapi=False,
+                log_level=logging.DEBUG,
             )
             assert root.level == logging.DEBUG
 
@@ -274,7 +276,7 @@ class TestRootLoggerLevel:
     @pytest.mark.usefixtures("app_logs_at_info")
     def test_an_app_configured_at_info_ships_its_logs_with_no_argument(self) -> None:
         """The common case — `basicConfig(level=INFO)`, uvicorn, gunicorn."""
-        init_observability(product="demo", instrument_fastapi=False)
+        init_observability(api_key="it_test_demo", instrument_fastapi=False)
         exporter = capture_logs()
 
         logging.getLogger("product").info("shipped")
@@ -286,8 +288,7 @@ class TestRootLoggerLevel:
 class TestResourceOnLogsAndMetrics:
     def test_logs_carry_every_required_resource_attribute(self) -> None:
         init_observability(
-            product="compliance",
-            env="prod",
+            api_key=TEST_API_KEY,
             service_name="compliance-api",
             service_version="1.4.2",
             instrument_fastapi=False,
@@ -299,13 +300,22 @@ class TestResourceOnLogsAndMetrics:
         resource = emitted(exporter, "check the resource").resource
         for attr in REQUIRED_RESOURCE_ATTRS:
             assert attr in resource.attributes, f"conventions.md requires {attr!r}"
-        assert resource.attributes["product"] == "compliance"
+        assert resource.attributes["service.name"] == "compliance-api"
+        assert resource.attributes["service.version"] == "1.4.2"
         wrapper = resource.attributes["telemetry.sdk.wrapper"]
         assert wrapper == f"indratrace/{__version__}"
+        # The gateway stamps identity on logs the same way it does on spans, so
+        # the SDK sends none of it here either (ADR 0009).
+        for attr in GATEWAY_STAMPED_ATTRS:
+            assert attr not in resource.attributes
 
     def test_metrics_carry_every_required_resource_attribute(self) -> None:
         """Assert on exported metric data, not just the provider's resource."""
-        init_observability(product="compliance", instrument_fastapi=False)
+        init_observability(
+            api_key=TEST_API_KEY,
+            service_name="compliance-api",
+            instrument_fastapi=False,
+        )
 
         provider = _get_meter_provider()
         assert provider is not None
@@ -323,33 +333,39 @@ class TestResourceOnLogsAndMetrics:
         resource = metrics_data.resource_metrics[0].resource
         for attr in REQUIRED_RESOURCE_ATTRS:
             assert attr in resource.attributes, f"conventions.md requires {attr!r}"
-        assert resource.attributes["product"] == "compliance"
+        assert resource.attributes["service.name"] == "compliance-api"
+        for attr in GATEWAY_STAMPED_ATTRS:
+            assert attr not in resource.attributes
 
         probe.shutdown()
 
     def test_all_three_providers_share_one_resource(self) -> None:
-        init_observability(product="shared", instrument_fastapi=False)
+        init_observability(
+            api_key=TEST_API_KEY, service_name="shared", instrument_fastapi=False
+        )
 
         tracer_provider = _get_provider()
         logger_provider = _get_logger_provider()
         meter_provider = _get_meter_provider()
         assert tracer_provider and logger_provider and meter_provider
 
-        products = {
-            tracer_provider.resource.attributes["product"],
-            logger_provider.resource.attributes["product"],
-            meter_resource(meter_provider).attributes["product"],
+        # `service.instance.id` is generated per `Resource.create` call, so
+        # comparing whole attribute sets also proves the resource was built once
+        # and shared — three separate builds would disagree on it.
+        resources = {
+            tuple(sorted(tracer_provider.resource.attributes.items())),
+            tuple(sorted(logger_provider.resource.attributes.items())),
+            tuple(sorted(meter_resource(meter_provider).attributes.items())),
         }
-        assert products == {"shared"}
+        assert len(resources) == 1, "the three providers do not share a resource"
+        assert tracer_provider.resource.attributes["service.name"] == "shared"
 
 
 class TestFailSilentAcrossAllSignals:
     """ADR 0003, now with three exporters that can each fail."""
 
     def test_bogus_endpoint_does_not_raise(self) -> None:
-        init_observability(
-            product="demo", endpoint=DEAD_ENDPOINT, instrument_fastapi=False
-        )
+        init_observability(api_key="it_test_demo", instrument_fastapi=False)
 
         assert _get_provider() is not None
         # Every signal exercised against a dead collector; the caller never knows.
@@ -372,7 +388,7 @@ class TestFailSilentAcrossAllSignals:
 
         monkeypatch.setattr(f"indratrace.init.{exporter_name}", boom)
 
-        init_observability(product="demo", instrument_fastapi=False)
+        init_observability(api_key="it_test_demo", instrument_fastapi=False)
 
         assert len(sdk_warnings(sdk_log)) == 1, "exactly one warning, per the spec"
         # A partial init leaves nothing marked initialized, so a retry is possible.
@@ -388,9 +404,7 @@ class TestFailSilentAcrossAllSignals:
         Shutdown drains all three serially, so an exporter that ignored our
         pinned timeout would hang process exit for 30s.
         """
-        init_observability(
-            product="demo", endpoint=DEAD_ENDPOINT, instrument_fastapi=False
-        )
+        init_observability(api_key="it_test_demo", instrument_fastapi=False)
 
         # Queue something on each signal, so every exporter has work to flush.
         trace_agent("shutdown")(lambda: None)()

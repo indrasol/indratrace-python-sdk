@@ -18,7 +18,9 @@ from indratrace.agent import (
     STEP_SPAN_KIND,
     TOOL_SPAN_KIND,
 )
+from indratrace.config import GATEWAY_STAMPED_ATTRS
 from indratrace.init import _get_provider, _reset_for_tests
+from indratrace.version import __version__
 
 
 @pytest.fixture
@@ -29,7 +31,7 @@ def spans() -> Iterator[InMemorySpanExporter]:
     at the first `set_tracer_provider` in the process (architecture.md).
     """
     _reset_for_tests()
-    init_observability(product="agent-tests", instrument_fastapi=False)
+    init_observability(api_key="it_test_agent_tests", instrument_fastapi=False)
 
     provider = _get_provider()
     assert provider is not None
@@ -94,9 +96,12 @@ class TestSpanShape:
 
         run()
 
-        assert by_name(spans, "agent resourced").resource.attributes["product"] == (
-            "agent-tests"
-        )
+        attributes = by_name(spans, "agent resourced").resource.attributes
+        assert attributes["telemetry.sdk.wrapper"] == f"indratrace/{__version__}"
+        # 1.0: the gateway stamps identity from the key, so a decorator span
+        # must not carry a product/env/tenant claim either (ADR 0009).
+        for attribute in GATEWAY_STAMPED_ATTRS:
+            assert attribute not in attributes
 
 
 class TestTraceStep:
@@ -136,9 +141,7 @@ class TestTraceStep:
         assert asyncio.run(load()) == 7
         assert by_name(spans, "step load") is not None
 
-    def test_step_nests_under_agent_and_tool(
-        self, spans: InMemorySpanExporter
-    ) -> None:
+    def test_step_nests_under_agent_and_tool(self, spans: InMemorySpanExporter) -> None:
         @trace_step
         def validate() -> None: ...
 

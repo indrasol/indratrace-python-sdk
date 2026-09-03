@@ -25,6 +25,7 @@ from indratrace import (
     trace_agent,
     trace_tool,
 )
+from indratrace.config import ENV_ENDPOINT, GATEWAY_STAMPED_ATTRS
 from indratrace.init import (
     _get_logger_provider,
     _get_meter_provider,
@@ -33,7 +34,8 @@ from indratrace.init import (
 )
 from indratrace.version import __version__
 
-OTLP_ENDPOINT = "http://localhost:4318"
+from .conftest import HARNESS_API_KEY, OTLP_ENDPOINT
+
 CLICKHOUSE_URL = "http://localhost:8123"
 # Throwaway harness credentials from dev/docker-compose.yml. The image confines
 # the `default` user to loopback, so a host-side client needs its own user.
@@ -68,8 +70,7 @@ def harness_is_up() -> bool:
 
 
 HARNESS_DOWN_REASON = (
-    "dev harness not reachable "
-    "(docker compose -f dev/docker-compose.yml up -d)"
+    "dev harness not reachable (docker compose -f dev/docker-compose.yml up -d)"
 )
 
 pytestmark = [
@@ -79,9 +80,25 @@ pytestmark = [
 
 
 @pytest.fixture
-def product() -> str:
-    """A unique product per run, so we assert on *our* row, not a stale one."""
+def service() -> str:
+    """A unique `service.name` per run, so we assert on *our* row, not a stale one.
+
+    This used to be a unique `product`. 1.0 stopped sending `product` — the
+    gateway stamps it from the API key (ADR 0009) — and the dev harness is a
+    plain Collector with no gateway in front, so `product` is absent from every
+    row here. `service.name` is the discriminator the SDK still owns.
+    """
     return f"itest-{uuid.uuid4().hex[:12]}"
+
+
+def assert_no_gateway_stamped_attrs(row: dict[str, str]) -> None:
+    """End-to-end twin of the resource unit test: the three the gateway owns
+    never left the SDK. ClickHouse returns `''` for a Map key that is absent, so
+    an empty column here means the attribute was genuinely not on the wire."""
+    for attr in GATEWAY_STAMPED_ATTRS:
+        assert row[attr] == "", (
+            f"the SDK sent {attr}={row[attr]!r}; the gateway owns it"
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -106,22 +123,32 @@ def wait_for_rows(sql: str) -> list[list[str]]:
     return []
 
 
-def wait_for_span(product: str, span_kind: str = "Server") -> list[str] | None:
-    """Poll until the `span_kind` span for `product` lands, or time runs out.
+#: The resource columns every span/log/metric assertion reads back, in order.
+#: The three gateway-stamped names are selected *deliberately* so their absence
+#: is asserted rather than assumed.
+_RESOURCE_COLUMNS = (
+    "product",
+    "deployment.environment",
+    "tenant.id",
+    "service.name",
+    "service.version",
+    "telemetry.sdk.wrapper",
+)
+_RESOURCE_SELECT = ", ".join(
+    f"ResourceAttributes['{name}']" for name in _RESOURCE_COLUMNS
+)
+
+
+def wait_for_span(service: str, span_kind: str = "Server") -> list[str] | None:
+    """Poll until the `span_kind` span for `service` lands, or time runs out.
 
     FastAPI emits several spans per request (the SERVER span plus INTERNAL
     `http send` children), so filter rather than taking the newest row.
     """
     sql = (
-        "SELECT SpanName, SpanKind, "
-        "ResourceAttributes['product'], "
-        "ResourceAttributes['deployment.environment'], "
-        "ResourceAttributes['tenant.id'], "
-        "ResourceAttributes['service.name'], "
-        "ResourceAttributes['service.version'], "
-        "ResourceAttributes['telemetry.sdk.wrapper'] "
+        f"SELECT SpanName, SpanKind, {_RESOURCE_SELECT} "
         "FROM otel.otel_traces "
-        f"WHERE ResourceAttributes['product'] = '{product}' "
+        f"WHERE ResourceAttributes['service.name'] = '{service}' "
         f"AND SpanKind = '{span_kind}' "
         "ORDER BY Timestamp DESC LIMIT 1 FORMAT TSV"
     )
@@ -135,17 +162,14 @@ def wait_for_span(product: str, span_kind: str = "Server") -> list[str] | None:
     return None
 
 
-def test_fastapi_request_lands_in_clickhouse(product: str) -> None:
+def test_fastapi_request_lands_in_clickhouse(service: str) -> None:
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
     init_observability(
-        product=product,
-        env="dev",
-        endpoint=OTLP_ENDPOINT,
-        api_key="dev-local",
-        service_name="itest-api",
+        api_key=HARNESS_API_KEY,
+        service_name=service,
         service_version="1.2.3",
         instrument_fastapi=False,
     )
@@ -170,43 +194,38 @@ def test_fastapi_request_lands_in_clickhouse(product: str) -> None:
     # Push the batch out now instead of waiting on the batch timeout.
     assert provider.force_flush(timeout_millis=10_000), "span never left the SDK"
 
-    row = wait_for_span(product)
+    row = wait_for_span(service)
     assert row is not None, (
-        f"no span row for product={product} within {ROW_TIMEOUT_SECONDS}s"
+        f"no span row for service.name={service} within {ROW_TIMEOUT_SECONDS}s"
     )
 
-    (
-        span_name,
-        span_kind,
-        row_product,
-        environment,
-        tenant_id,
-        service_name,
-        service_version,
-        wrapper,
-    ) = row
+    span_name, span_kind, *resource_values = row
+    resource = dict(zip(_RESOURCE_COLUMNS, resource_values, strict=True))
 
-    assert row_product == product
     assert span_kind == "Server", f"expected an HTTP server span, got {span_kind}"
     assert "/hello" in span_name
 
-    # The full resource contract from docs/conventions.md.
-    assert environment == "dev"
-    assert tenant_id == "internal"
-    assert service_name == "itest-api"
-    assert service_version == "1.2.3"
-    assert wrapper == f"indratrace/{__version__}"
+    # What the SDK still owns, on the wire.
+    assert resource["service.name"] == service
+    assert resource["service.version"] == "1.2.3"
+    assert resource["telemetry.sdk.wrapper"] == f"indratrace/{__version__}"
+    # ...and what it must never claim (ADR 0009). Asserted end to end, not just
+    # on the in-process Resource: this is the byte stream the gateway will stamp.
+    assert_no_gateway_stamped_attrs(resource)
 
 
-def test_unreachable_collector_does_not_break_requests(product: str) -> None:
+def test_unreachable_collector_does_not_break_requests(
+    service: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """ADR 0003: killing the Collector must not fail a single request."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
+    monkeypatch.setenv(ENV_ENDPOINT, "http://127.0.0.1:1")  # nothing listens here
     init_observability(
-        product=product,
-        endpoint="http://127.0.0.1:1",  # nothing listens here
+        api_key=HARNESS_API_KEY,
+        service_name=service,
         instrument_fastapi=False,
     )
     provider = _get_provider()
@@ -227,7 +246,7 @@ def test_unreachable_collector_does_not_break_requests(product: str) -> None:
     provider.force_flush(timeout_millis=2_000)  # fails internally; never raises
 
 
-def test_agent_and_tool_spans_form_a_tree(product: str) -> None:
+def test_agent_and_tool_spans_form_a_tree(service: str) -> None:
     """Agent -> tool -> nested tool, with a failing tool marked ERROR.
 
     The decorators resolve the tracer from the SDK's own provider, so unlike
@@ -235,10 +254,8 @@ def test_agent_and_tool_spans_form_a_tree(product: str) -> None:
     global provider.
     """
     init_observability(
-        product=product,
-        env="dev",
-        endpoint=OTLP_ENDPOINT,
-        api_key="dev-local",
+        api_key=HARNESS_API_KEY,
+        service_name=service,
         instrument_fastapi=False,
     )
     provider = _get_provider()
@@ -270,7 +287,7 @@ def test_agent_and_tool_spans_form_a_tree(product: str) -> None:
         "SpanAttributes['indratrace.span.kind'], SpanAttributes['agent.name'], "
         "SpanAttributes['tool.name'] "
         "FROM otel.otel_traces "
-        f"WHERE ResourceAttributes['product'] = '{product}' "
+        f"WHERE ResourceAttributes['service.name'] = '{service}' "
         "FORMAT TSV"
     )
     assert len(rows) == 3, f"expected agent + 2 tool spans, got {len(rows)}"
@@ -298,17 +315,15 @@ def test_agent_and_tool_spans_form_a_tree(product: str) -> None:
     assert agent[4] == "Unset"
 
 
-def test_log_inside_a_span_lands_with_the_same_trace_id(product: str) -> None:
+def test_log_inside_a_span_lands_with_the_same_trace_id(service: str) -> None:
     """A stdlib log line inside an agent span links to that trace.
 
     `log_level="INFO"` opts this app into shipping INFO — the SDK does not
     lower the root level on its own (see TestRootLoggerLevel).
     """
     init_observability(
-        product=product,
-        env="dev",
-        endpoint=OTLP_ENDPOINT,
-        api_key="dev-local",
+        api_key=HARNESS_API_KEY,
+        service_name=service,
         instrument_fastapi=False,
         log_level="INFO",
     )
@@ -316,7 +331,7 @@ def test_log_inside_a_span_lands_with_the_same_trace_id(product: str) -> None:
     logger_provider = _get_logger_provider()
     assert tracer_provider is not None and logger_provider is not None
 
-    message = f"audit complete for {product}"
+    message = f"audit complete for {service}"
     seen: dict[str, str] = {}
 
     @trace_agent("logger")
@@ -331,29 +346,29 @@ def test_log_inside_a_span_lands_with_the_same_trace_id(product: str) -> None:
     assert logger_provider.force_flush(timeout_millis=10_000)
 
     rows = wait_for_rows(
-        "SELECT Body, TraceId, SeverityText, "
-        "ResourceAttributes['product'], ResourceAttributes['tenant.id'] "
+        f"SELECT Body, TraceId, SeverityText, {_RESOURCE_SELECT} "
         "FROM otel.otel_logs "
-        f"WHERE ResourceAttributes['product'] = '{product}' "
+        f"WHERE ResourceAttributes['service.name'] = '{service}' "
         "FORMAT TSV"
     )
-    assert rows, f"no log row for product={product} within {ROW_TIMEOUT_SECONDS}s"
+    assert rows, f"no log row for service.name={service} within {ROW_TIMEOUT_SECONDS}s"
 
-    (body, trace_id, severity, row_product, tenant_id) = rows[0]
+    body, trace_id, severity, *resource_values = rows[0]
+    resource = dict(zip(_RESOURCE_COLUMNS, resource_values, strict=True))
     assert body == message
     assert trace_id == seen["trace_id"], "the log did not link to its span's trace"
     assert severity == "INFO"
-    assert row_product == product
-    assert tenant_id == "internal"  # the resource contract holds on logs too
+    assert resource["service.name"] == service
+    # The resource contract holds on logs too — including the absence half of it.
+    assert resource["telemetry.sdk.wrapper"] == f"indratrace/{__version__}"
+    assert_no_gateway_stamped_attrs(resource)
 
 
-def test_metrics_land_with_the_product_resource_attribute(product: str) -> None:
+def test_metrics_land_with_the_sdks_resource_attributes(service: str) -> None:
     """v0.1 has no custom-metric API; assert the meter provider's wire path."""
     init_observability(
-        product=product,
-        env="dev",
-        endpoint=OTLP_ENDPOINT,
-        api_key="dev-local",
+        api_key=HARNESS_API_KEY,
+        service_name=service,
         instrument_fastapi=False,
     )
     meter_provider = _get_meter_provider()
@@ -365,22 +380,25 @@ def test_metrics_land_with_the_product_resource_attribute(product: str) -> None:
     assert meter_provider.force_flush(timeout_millis=10_000)
 
     rows = wait_for_rows(
-        "SELECT MetricName, Value, "
-        "ResourceAttributes['product'], ResourceAttributes['deployment.environment'] "
+        f"SELECT MetricName, Value, {_RESOURCE_SELECT} "
         "FROM otel.otel_metrics_sum "
-        f"WHERE ResourceAttributes['product'] = '{product}' "
+        f"WHERE ResourceAttributes['service.name'] = '{service}' "
         "FORMAT TSV"
     )
-    assert rows, f"no metric row for product={product} within {ROW_TIMEOUT_SECONDS}s"
+    assert rows, (
+        f"no metric row for service.name={service} within {ROW_TIMEOUT_SECONDS}s"
+    )
 
-    (metric_name, value, row_product, environment) = rows[0]
+    metric_name, value, *resource_values = rows[0]
+    resource = dict(zip(_RESOURCE_COLUMNS, resource_values, strict=True))
     assert metric_name == "itest.requests"
     assert float(value) == 1.0
-    assert row_product == product
-    assert environment == "dev"
+    assert resource["service.name"] == service
+    assert resource["telemetry.sdk.wrapper"] == f"indratrace/{__version__}"
+    assert_no_gateway_stamped_attrs(resource)
 
 
-def test_session_and_feedback_land_and_join(product: str) -> None:
+def test_session_and_feedback_land_and_join(service: str) -> None:
     """A session-wrapped agent+tool flow, then feedback keyed on its trace.
 
     Asserts every span of the request carries the same `session.id`/`user.id`,
@@ -388,10 +406,8 @@ def test_session_and_feedback_land_and_join(product: str) -> None:
     equal to the request's trace — the join the platform relies on.
     """
     init_observability(
-        product=product,
-        env="dev",
-        endpoint=OTLP_ENDPOINT,
-        api_key="dev-local",
+        api_key=HARNESS_API_KEY,
+        service_name=service,
         instrument_fastapi=False,
     )
     provider = _get_provider()
@@ -422,7 +438,7 @@ def test_session_and_feedback_land_and_join(product: str) -> None:
         "SpanAttributes['indratrace.span.kind'], "
         "SpanAttributes['feedback.score'], SpanAttributes['feedback.trace_id'] "
         "FROM otel.otel_traces "
-        f"WHERE ResourceAttributes['product'] = '{product}' "
+        f"WHERE ResourceAttributes['service.name'] = '{service}' "
         "FORMAT TSV"
     )
     # agent + tool + feedback = 3 spans.

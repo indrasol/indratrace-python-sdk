@@ -28,11 +28,14 @@ from .agent_sdk import (
     enable_agent_sdk_instrumentation,
 )
 from .config import (
+    REMOVED_PARAMS,
+    IndraTraceConfigError,
     ObsConfig,
     build_resource,
     resolve_capture_content,
     resolve_config,
     resolve_debug,
+    warn_about_removed_env_vars,
 )
 from .context import SessionSpanProcessor
 from .genai import _uninstrument_genai, enable_genai_instrumentation
@@ -307,8 +310,20 @@ def _enable_debug_logging() -> tuple[logging.Handler | None, int | None]:
     return handler, level_before
 
 
+def _service_name(resource: Resource) -> str:
+    """The `service.name` actually on the wire, as OpenTelemetry resolved it.
+
+    Read off the built Resource rather than off `cfg`, because `service_name` is
+    optional in 1.0: when it is unset, OTel supplies the value (from
+    `OTEL_SERVICE_NAME` if the app set it, else `unknown_service`). The banner
+    must report what is being sent, not what was passed.
+    """
+    return str(resource.attributes.get("service.name", "unknown_service"))
+
+
 def _banner_lines(
     cfg: ObsConfig,
+    resource: Resource,
     http_statuses: list[tuple[str, bool, str]],
     loguru_status: tuple[bool, str],
     genai_statuses: list[tuple[str, bool, str]],
@@ -317,11 +332,15 @@ def _banner_lines(
 ) -> list[str]:
     """The `debug=True` startup banner, one list entry per line.
 
-    Reports the resolved identity (version, product, env, endpoint) and, for
-    every optional integration, whether it turned on and — when it didn't — the
-    reason (extra not installed, load/instrument failure). That last part is the
-    lesson of the prompt-08 silent failure: a user staring at an empty dashboard
-    needs to see *"claude-agent-sdk: skipped (extra not installed)"* to know why.
+    Reports what the SDK resolved (version, service, endpoint) and, for every
+    optional integration, whether it turned on and — when it didn't — the reason
+    (extra not installed, load/instrument failure). That last part is the lesson
+    of the prompt-08 silent failure: a user staring at an empty dashboard needs
+    to see *"claude-agent-sdk: skipped (extra not installed)"* to know why.
+
+    It reports no product/env/tenant, because 1.0 sends none: the `identity` line
+    says so explicitly, so an operator hunting for "why is my telemetry under the
+    wrong product?" is pointed at the key instead of at a missing argument.
     """
 
     def status(enabled: bool, reason: str) -> str:
@@ -329,10 +348,11 @@ def _banner_lines(
 
     lines = [
         f"{_PRODUCT_NAME} SDK v{__version__} initialized",
-        f"  product={cfg.product} env={cfg.env} service={cfg.service_name}",
+        f"  service={_service_name(resource)} version={cfg.service_version}",
         f"  endpoint={cfg.endpoint} (traces={cfg.traces_endpoint})",
-        f"  api_key={'set' if cfg.api_key else 'unset (no auth header)'} "
-        f"capture_content={'on' if capture_content else 'off'}",
+        f"  api_key=set capture_content={'on' if capture_content else 'off'}",
+        "  identity: product, deployment.environment and tenant.id are stamped "
+        "by IndraTrace from your API key",
         "  signals: traces + logs + metrics (OTLP/HTTP, batched)",
     ]
     for framework, enabled, reason in http_statuses:
@@ -370,37 +390,77 @@ def _debug_connectivity_probe(tracer_provider: TracerProvider) -> None:
         logger.debug("indratrace: debug connectivity probe failed", exc_info=True)
 
 
+def _reject_removed_kwargs(kwargs: dict[str, Any]) -> None:
+    """Turn a pre-1.0 call into an explanation instead of a bare `TypeError`.
+
+    `init_observability` collects unknown keywords rather than letting Python
+    reject them, for exactly one reason: `product=`, `env=`, `endpoint=` and
+    `ingest_key=` are what every 0.x integration passes, and
+    *"unexpected keyword argument 'product'"* tells that user nothing about the
+    key now deciding the product. Each removed name gets its own message saying
+    why it went and what to do (ADR 0009).
+
+    Anything else is a genuine typo and still raises the ordinary `TypeError` —
+    the gate explains the migration, it does not become a catch-all.
+    """
+    for name, message in REMOVED_PARAMS.items():
+        if name in kwargs:
+            raise IndraTraceConfigError(message)
+    if kwargs:
+        unexpected = next(iter(kwargs))
+        raise TypeError(
+            f"init_observability() got an unexpected keyword argument {unexpected!r}"
+        )
+
+
 def init_observability(
-    product: str | None = None,
-    env: str | None = None,
     api_key: str | None = None,
-    endpoint: str | None = None,
+    *,
     service_name: str | None = None,
     service_version: str | None = None,
     instrument_http: bool = True,
+    instrument_fastapi: bool | None = None,
     log_level: int | str | None = None,
     capture_content: bool | None = None,
     debug: bool | None = None,
-    ingest_key: str | None = None,
-    instrument_fastapi: bool | None = None,
+    **removed: Any,
 ) -> None:
     """Wire OpenTelemetry to ship telemetry to IndraTrace. Call once, at startup.
 
+    The whole integration is the API key::
+
+        from indratrace import init_observability
+        init_observability(api_key="it_live_...")
+
     Sets up all three signals: traces, logs (stdlib `logging` — and `loguru` —
-    bridged into OTel, carrying trace context), and metrics. Config precedence is
-    explicit args > `INDRATRACE_*` env vars > defaults (see docs/conventions.md).
-    Everything exports over OTLP/HTTP from background batchers, authenticated
-    with the `x-indratrace-key` header.
+    bridged into OTel, carrying trace context), and metrics. Everything exports
+    over OTLP/HTTP from background batchers, authenticated with the
+    `x-indratrace-key` header.
+
+    **The key decides identity** (ADR 0009). Your product, its environment and
+    your tenant come from the key, stamped by IndraTrace's ingest gateway when
+    the telemetry lands — the SDK sends none of them, and there is nothing to
+    configure. `product`, `env`, `endpoint` and `ingest_key` were removed in 1.0;
+    passing one raises `IndraTraceConfigError` explaining what to do instead.
 
     Args:
-        api_key: The IndraTrace API key. When set, it is sent on every export as
-            the `x-indratrace-key` header; leave it unset (the default) and no
-            auth header is sent. Resolves from the `INDRATRACE_API_KEY` env var
-            when omitted.
-        ingest_key: **Deprecated** alias for `api_key` (renamed in v0.5.0), still
-            accepted for backward compatibility. Passing it — or the
-            `INDRATRACE_KEY` env var — emits a single `DeprecationWarning`. If
-            both are given, `api_key` wins and the warning still fires.
+        api_key: The IndraTrace API key — the only required configuration, and
+            the only positional argument. Sent on every export as the
+            `x-indratrace-key` header. Resolves from the `INDRATRACE_API_KEY` env
+            var when omitted; when neither supplies one, this raises
+            `IndraTraceConfigError` rather than shipping telemetry that the
+            gateway would reject with a 401 nobody ever sees.
+
+    Advanced:
+        Every remaining argument is keyword-only and optional. Most apps pass
+        none of them.
+
+        service_name: Name of *this* deployable, when one product has more than
+            one (an API and a worker, say). Defaults to whatever OpenTelemetry
+            resolves — `OTEL_SERVICE_NAME` if your app sets it, else
+            `unknown_service`. This is a label on the deployable; it does not
+            name your product, which the key already does.
+        service_version: Your app's own version string, e.g. `"1.4.2"`.
         instrument_http: Whether to auto-instrument the web frameworks whose
             extras are installed — FastAPI, Django, and Flask — so every HTTP
             request becomes a server span. On by default; an absent extra is a
@@ -439,18 +499,33 @@ def init_observability(
             `INDRATRACE_DEBUG` (truthy: `1/true/yes/on`), else off. Use it when
             nothing is showing up in your dashboard and you want to see why.
 
-    This never raises and never blocks the host app (ADR 0003). If wiring
-    fails — bad config, unreachable collector, missing dependency — it logs a
-    single warning and leaves the app un-instrumented. Calling it twice is a
-    no-op.
+    Raises:
+        IndraTraceConfigError: no API key was given (and `INDRATRACE_API_KEY` is
+            unset or empty), or a parameter removed in 1.0 was passed. These are
+            the *only* failures that surface — both are startup mistakes a
+            developer is standing in front of, and both used to be invisible.
+        TypeError: an unrecognized keyword argument, as for any function.
+
+    Beyond those, this never raises and never blocks the host app (ADR 0003).
+    Once wired, a dead gateway, a rejected key, a missing dependency — all of it
+    is logged and dropped, never raised. If wiring itself fails it logs a single
+    warning and leaves the app un-instrumented. Calling it twice is a no-op.
     """
     global _initialized, _provider, _logger_provider, _meter_provider
     global _log_handler, _root_level_before
     global _debug_handler, _debug_level_before
 
+    # Before the idempotency guard: a call that names a removed parameter is
+    # wrong on the second call too, and the migration message is the point.
+    _reject_removed_kwargs(removed)
+
     if _initialized:
         logger.debug("init_observability() already called; ignoring")
         return
+
+    # One warning per removed env var that is still set, then ignored. After the
+    # idempotency guard, so a re-init does not warn the operator twice.
+    warn_about_removed_env_vars()
 
     # `instrument_fastapi` is the pre-0.6.0 name, from when FastAPI was the only
     # web framework we instrumented. It now gates all three; the new name wins if
@@ -460,27 +535,24 @@ def init_observability(
     if instrument_fastapi is not None and instrument_http:
         instrument_http = instrument_fastapi
 
-    # Resolve + wire debug *first*, before anything that can fail: a missing
-    # `product` raises inside resolve_config, and the operator who asked for
-    # diagnostics should still see *that* failure narrated on the console.
+    # Resolve config *outside* the fail-silent block, and before any console
+    # wiring: a missing key must reach the caller (that is the whole of §2), and
+    # a raise here leaves nothing built and no handler attached to unwind.
+    cfg = resolve_config(
+        api_key=api_key,
+        service_name=service_name,
+        service_version=service_version,
+    )
+
     debug_on = resolve_debug(debug)
     if debug_on:
         _debug_handler, _debug_level_before = _enable_debug_logging()
 
-    # Track what got built so a failure part-way through doesn't strand
-    # background exporter threads owned by nothing.
+    # From here on, fail-silent (ADR 0003). Track what got built so a failure
+    # part-way through doesn't strand background exporter threads owned by
+    # nothing.
     built: list[_Shutdownable] = []
     try:
-        cfg = resolve_config(
-            product=product,
-            env=env,
-            api_key=api_key,
-            ingest_key=ingest_key,
-            endpoint=endpoint,
-            service_name=service_name,
-            service_version=service_version,
-        )
-
         # One Resource for all three providers. Built once, not per provider:
         # `Resource.create` runs the OTel detectors, and a detector that varies
         # per call (`service.instance.id` is one) would stamp traces, logs, and
@@ -583,14 +655,14 @@ def init_observability(
         # under debug (and to any operator handler on the `indratrace` logger)
         # without a full banner.
         logger.info(
-            "indratrace initialized: product=%s env=%s endpoint=%s",
-            cfg.product,
-            cfg.env,
+            "indratrace initialized: service=%s endpoint=%s",
+            _service_name(resource),
             cfg.endpoint,
         )
         if debug_on:
             for line in _banner_lines(
                 cfg,
+                resource,
                 http_statuses,
                 loguru_status,
                 genai_statuses,
@@ -602,8 +674,7 @@ def init_observability(
     except Exception:  # noqa: BLE001 — fail-silent is the whole point (ADR 0003)
         _shutdown_quietly(built)
         logger.warning(
-            "indratrace: observability setup failed; the app will run "
-            "un-instrumented",
+            "indratrace: observability setup failed; the app will run un-instrumented",
             exc_info=True,
         )
 
