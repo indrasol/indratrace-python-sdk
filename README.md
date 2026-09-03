@@ -504,7 +504,7 @@ still works and now gates all three frameworks.
 > removed in 1.0 — the key decides all of them. Passing one raises an error that
 > names it and tells you what to write instead, and `INDRATRACE_PRODUCT` /
 > `INDRATRACE_ENV` / `INDRATRACE_KEY` are ignored with a warning. See the
-> [CHANGELOG](CHANGELOG.md#100--2026-09-03) for a before/after snippet.
+> [CHANGELOG](https://github.com/indrasol/indratrace-python-sdk/blob/main/CHANGELOG.md#100--2026-09-03) for a before/after snippet.
 
 Your existing `logging` calls ship automatically once your app is at INFO — the
 usual case under `basicConfig(level=INFO)`, uvicorn, or gunicorn. The SDK does
@@ -570,9 +570,11 @@ visible log lines (details below). Two lines answer almost everything:
 - `export ok` — the telemetry left your process and was accepted. If the
   dashboard is still empty, you are looking at the wrong product or environment;
   go back to step 2.
-- `export FAILED` — it did not. A `401` means the key was rejected (revoked, or
-  a typo in the value); anything else means the gateway was not reachable from
-  where your app runs.
+- `export FAILED` — it did not, and the line names the HTTP status the gateway
+  answered with. A `401` means the key was rejected (revoked, or a typo in the
+  value); *no* HTTP response at all means the gateway was not reachable from
+  where your app runs; any other status means it was reached and refused the
+  batch.
 
 If all three check out and you still see nothing, the remaining possibility is
 placement, not configuration: `init_observability()` ran too late for
@@ -639,10 +641,10 @@ found the problem.
 
 ## Contributing & community
 
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — dev setup, the test harness, and PR
+- [`CONTRIBUTING.md`](https://github.com/indrasol/indratrace-python-sdk/blob/main/CONTRIBUTING.md) — dev setup, the test harness, and PR
   expectations.
-- [`SECURITY.md`](SECURITY.md) — how to report a vulnerability privately.
-- [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) — the Contributor Covenant we follow.
+- [`SECURITY.md`](https://github.com/indrasol/indratrace-python-sdk/blob/main/SECURITY.md) — how to report a vulnerability privately.
+- [`CODE_OF_CONDUCT.md`](https://github.com/indrasol/indratrace-python-sdk/blob/main/CODE_OF_CONDUCT.md) — the Contributor Covenant we follow.
 - Found a bug or want a feature? Open an
   [issue](https://github.com/indrasol/indratrace-python-sdk/issues/new/choose).
 
