@@ -116,7 +116,7 @@ application object — it works by adding middleware. See
 `instrument_flask_app(app)`. See [Flask](#flask).
 
 Missing an extra is never an error — the SDK skips it silently. If a signal you
-expected is missing, [turn on debug](#nothing-showing-up-turn-on-debug): the
+expected is missing, [turn on debug](#turning-on-debug): the
 startup banner prints `enabled` or `skipped (extra not installed)` for every
 integration above.
 
