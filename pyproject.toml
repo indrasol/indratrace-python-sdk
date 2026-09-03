@@ -12,7 +12,7 @@ license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 authors = [{ name = "Indrasol", email = "rithin.gullapalli@indrasol.com" }]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "License :: OSI Approved :: Apache Software License",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",

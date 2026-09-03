@@ -608,7 +608,7 @@ indratrace [DEBUG]   http[flask]: skipped (extra not installed)
 indratrace [DEBUG]   loguru: enabled
 indratrace [DEBUG]   genai[anthropic]: enabled
 indratrace [DEBUG]   claude-agent-sdk: skipped (extra not installed)
-indratrace [WARNING] indratrace: traces export FAILED (FAILURE) — is the collector reachable at the configured endpoint?
+indratrace [WARNING] indratrace: traces export FAILED (FAILURE) — HTTP 401: the gateway rejected your API key. Check the value of INDRATRACE_API_KEY in the process that is running; keys are shown once when the product is created.
 ```
 
 Read it top to bottom:
@@ -621,7 +621,10 @@ Read it top to bottom:
   The `http[…]`, `loguru`, `genai[…]`, and `claude-agent-sdk` lines cover every
   row of the [support matrix](#what-you-get-by-framework).
 - An **`export FAILED`** line means the SDK built fine but IndraTrace didn't
-  accept the data — a `401` is a rejected key, anything else is reachability.
+  accept the data. It carries the HTTP status the gateway answered with: `401`
+  is a rejected key (the sample above), any other status means the gateway was
+  reached and refused the batch, and *no* HTTP response at all means it was not
+  reachable from where your app runs.
 
 One thing the banner **cannot** tell you: whether `init_observability()` ran
 early enough. `http[django]: enabled` means the middleware was installed, but if

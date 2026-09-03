@@ -117,11 +117,4 @@ read, while failing to insist on the one value everything depended on.
 
 ## Release coordination
 
-The platform's own API dogfoods through this SDK and still calls
-`init_observability(product=..., env=...)` (`indratrace-app/api/main.py`).
-**Publishing 1.0.0 to PyPI before that call is migrated breaks the platform's
-self-instrumentation.** So v1.0.0 is built and tagged in this repo and
-deliberately **not published**. What unblocks the upload is **platform P80b**,
-which migrates the platform's own call site and mirrors this SDK's "Still
-waiting for your first span?" section into the platform Quickstart. Rithin
-publishes once P80b is ready to ship in the same window.
+Released 2026-09-03; the platform pinned `<1.0` until its own call site migrated.

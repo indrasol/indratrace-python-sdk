@@ -110,6 +110,29 @@ def _shutdown_quietly(providers: Iterable[_Shutdownable | None]) -> None:
             logger.debug("indratrace: provider shutdown failed", exc_info=True)
 
 
+def _export_failure_hint(status: int | None) -> str:
+    """The actionable half of an ``export FAILED`` line, given the HTTP status.
+
+    README § "Still waiting for your first span?" step 3 tells the user a `401`
+    means the key was rejected and anything else means the gateway was not
+    reachable. That promise is only true if the status actually reaches the log
+    line — the export-result enum is SUCCESS/FAILURE and carries no status, so
+    without this the same "is the collector reachable?" text was printed for a
+    rejected key, pointing the user at the one thing that was not wrong.
+    """
+    if status is None:
+        return (
+            " — no HTTP response; is the gateway reachable at the configured endpoint?"
+        )
+    if status in (401, 403):
+        return (
+            f" — HTTP {status}: the gateway rejected your API key. Check the value of"
+            " INDRATRACE_API_KEY in the process that is running; keys are shown once"
+            " when the product is created."
+        )
+    return f" — HTTP {status}: the gateway was reached and refused the batch."
+
+
 def _audible_export(exporter: Any, signal: str) -> Any:
     """Wrap an OTLP exporter's `export()` so each attempt logs its outcome.
 
@@ -127,7 +150,25 @@ def _audible_export(exporter: Any, signal: str) -> Any:
     """
     real_export = exporter.export
 
+    # The result enum names only SUCCESS/FAILURE, so `export()` alone cannot tell
+    # a rejected key from an unreachable gateway — the exact distinction the
+    # README asks the user to make. The HTTP status is known one layer down, in
+    # the exporter's `_export`, so record it there and read it back when
+    # narrating. `_export` is private OTel API: wrapped only when present, and
+    # its absence costs only the status (fail-silent — never a broken export).
+    seen_status: list[int | None] = [None]
+    real_low_level = getattr(exporter, "_export", None)
+    if callable(real_low_level):
+
+        def _export_recording(*args: Any, **kwargs: Any) -> Any:
+            response = real_low_level(*args, **kwargs)
+            seen_status[0] = getattr(response, "status_code", None)
+            return response
+
+        exporter._export = _export_recording
+
     def export(*args: Any, **kwargs: Any) -> Any:
+        seen_status[0] = None  # this attempt's status, not the previous one's
         try:
             result = real_export(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001 — narrate, never change behavior
@@ -136,15 +177,15 @@ def _audible_export(exporter: Any, signal: str) -> Any:
             )
             raise
         # The three result enums all name their success member SUCCESS; anything
-        # else is a drop (dead collector, 4xx, timeout).
+        # else is a drop (dead gateway, 4xx, timeout).
         if getattr(result, "name", None) == "SUCCESS":
             logger.debug("indratrace: %s export ok", signal)
         else:
             logger.warning(
-                "indratrace: %s export FAILED (%s) — is the collector reachable "
-                "at the configured endpoint?",
+                "indratrace: %s export FAILED (%s)%s",
                 signal,
                 getattr(result, "name", result),
+                _export_failure_hint(seen_status[0]),
             )
         return result
 

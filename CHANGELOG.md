@@ -24,13 +24,7 @@ whatever the payload claims, so those three had nothing left to decide in the
 SDK — and a *missing* key, which used to be a silent stream of 401s you never
 saw, is now a loud error at startup where you are looking.
 
-> **⚠ Release note — built and tagged, deliberately not published yet.**
-> The IndraTrace platform's own API dogfoods through this SDK and still calls
-> `init_observability(product=..., env=...)`. Publishing 1.0.0 to PyPI before
-> that call is migrated would break the platform's self-instrumentation, so
-> `v1.0.0` is tagged here and held. **What unblocks the upload: platform P80b**,
-> which migrates the platform's own call site (and mirrors the new Quickstart).
-> Rithin publishes 1.0.0 once P80b ships in the same window.
+Upgrading from 0.6? See **Migration** below — it is a one-line change.
 
 ### Breaking
 
@@ -97,6 +91,11 @@ saw, is now a loud error at startup where you are looking.
   configuration error reaches you. Runtime posture is unchanged (ADR 0003):
   once wired, exports stay async and batched, and a dead gateway, a rejected key
   or a missing extra is still logged and dropped, never raised into your app.
+- **`export FAILED` now names the HTTP status** the gateway answered with, so a
+  rejected key (`HTTP 401`) reads differently from an unreachable gateway (no
+  HTTP response). The line previously asked "is the collector reachable?" for
+  every failure, including a 401 — pointing you at the one thing that was not
+  wrong. Debug output only; the export path is unchanged.
 
 ### Migration from 0.6
 

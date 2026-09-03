@@ -22,7 +22,7 @@ from indratrace.config import (
     GATEWAY_STAMPED_ATTRS,
     resolve_debug,
 )
-from indratrace.init import _reset_for_tests
+from indratrace.init import _audible_export, _export_failure_hint, _reset_for_tests
 
 # Nothing listens here; every export against it fails fast (conftest shrinks the
 # export timeout for the offline suite, so the probe's flush is near-instant).
@@ -293,6 +293,52 @@ class TestAudibleExport:
             instrument_fastapi=False,
             debug=True,
         )  # no exception == pass
+
+    def test_a_rejected_key_says_401_not_unreachable(
+        self, sdk_log: list[logging.LogRecord]
+    ) -> None:
+        """A 401 must read as a rejected key, not as an unreachable gateway.
+
+        README § "Still waiting for your first span?" step 3 promises the user
+        they can tell those two apart from the export line. The result enum is
+        only SUCCESS/FAILURE, so the status has to come from the exporter's
+        `_export` — this pins that it does, and that the old blanket "is the
+        collector reachable?" text no longer fires for an answered request.
+        (Proved live against the real gateway during the 1.0.0 release.)
+        """
+
+        class _Response:
+            status_code = 401
+            ok = False
+
+        class _Result:
+            name = "FAILURE"
+
+        class _Exporter:
+            def _export(self, *args: object, **kwargs: object) -> _Response:
+                return _Response()
+
+            def export(self, *args: object, **kwargs: object) -> _Result:
+                self._export(b"")  # what the real OTLP exporter does internally
+                return _Result()
+
+        exporter = _audible_export(_Exporter(), "traces")
+        exporter.export([])
+
+        line = next(
+            record.getMessage()
+            for record in sdk_log
+            if "export FAILED" in record.getMessage()
+        )
+        assert "HTTP 401" in line
+        assert "rejected your API key" in line
+        assert "reachable" not in line
+
+    def test_no_http_response_still_asks_about_reachability(self) -> None:
+        """The blanket text survives where it is actually true: nothing answered."""
+        hint = _export_failure_hint(None)
+        assert "reachable" in hint
+        assert "HTTP 4" not in hint and "HTTP 5" not in hint  # no status to report
 
 
 class TestEnvVar:
