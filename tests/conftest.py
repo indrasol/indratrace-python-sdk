@@ -13,6 +13,7 @@ from indratrace.config import (
     ENV_ENDPOINT,
     ENV_ENV,
     ENV_KEY,
+    ENV_PREFLIGHT,
     ENV_PRODUCT,
 )
 
@@ -20,7 +21,14 @@ from indratrace.config import (
 # but they still WARN when set (config.warn_about_removed_env_vars). So a
 # developer's shell must not leak them into the suite either: a stray
 # INDRATRACE_PRODUCT would make every `recwarn` assertion flaky.
-_INDRATRACE_ENV_VARS = (ENV_ENDPOINT, ENV_API_KEY, ENV_KEY, ENV_PRODUCT, ENV_ENV)
+_INDRATRACE_ENV_VARS = (
+    ENV_ENDPOINT,
+    ENV_API_KEY,
+    ENV_KEY,
+    ENV_PRODUCT,
+    ENV_ENV,
+    ENV_PREFLIGHT,
+)
 
 #: 1.0 makes the API key required, so every `init_observability()` in the suite
 #: needs one. Any non-empty string works: the SDK checks presence, never format
@@ -56,6 +64,11 @@ def clean_env(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -
 
     monkeypatch.setenv(ENV_ENDPOINT, UNREACHABLE_ENDPOINT)
     monkeypatch.setattr(TIMEOUT_ATTR, TEST_EXPORT_TIMEOUT_SECONDS)
+    # The startup preflight is a real network request. Off for the unit suite
+    # — every init would otherwise probe the unreachable endpoint and log an
+    # error nobody asserts on. `test_preflight.py` turns it on per test, with
+    # the transport faked.
+    monkeypatch.setenv(ENV_PREFLIGHT, "0")
 
 
 @pytest.fixture
