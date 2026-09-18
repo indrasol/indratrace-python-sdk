@@ -567,6 +567,25 @@ def init_observability(
     configure. `product`, `env`, `endpoint` and `ingest_key` were removed in 1.0;
     passing one raises `IndraTraceConfigError` explaining what to do instead.
 
+    **Where it ships.** The IndraTrace production ingest gateway
+    (`config.DEFAULT_ENDPOINT`). A self-hosted deployment, or IndraTrace's own
+    dev environment, sets the `INDRATRACE_ENDPOINT` environment variable to its
+    gateway's base URL instead — a supported override, and an env var rather
+    than a parameter on purpose: the gateway is a property of the deployment,
+    so it is set where the deployment's environment is, and the code is the
+    same everywhere.
+
+    **It checks, once.** Before returning, one ~2s authenticated request goes
+    to the gateway and anything other than 2xx is logged as one paragraph
+    naming the cause: the hostname does not resolve, outbound egress is blocked
+    (firewall/NSG/UDR/proxy on 443), `INDRATRACE_ENDPOINT` was never set, TLS
+    interception, a rejected key (401), no card on file (402), not-the-gateway
+    (404). Non-fatal: the app keeps running. `INDRATRACE_PREFLIGHT=strict`
+    raises `IndraTraceConfigError` instead (for CI); `INDRATRACE_PREFLIGHT=0`
+    skips the request (air-gapped hosts). After that, exports are watched: three
+    consecutive failed batches log the same diagnosis once, then at most once
+    every five minutes, and recovery logs one line.
+
     Args:
         api_key: The IndraTrace API key — the only required configuration, and
             the only positional argument. Sent on every export as the
@@ -625,9 +644,10 @@ def init_observability(
 
     Raises:
         IndraTraceConfigError: no API key was given (and `INDRATRACE_API_KEY` is
-            unset or empty), or a parameter removed in 1.0 was passed. These are
-            the *only* failures that surface — both are startup mistakes a
-            developer is standing in front of, and both used to be invisible.
+            unset or empty), or a parameter removed in 1.0 was passed — or, only
+            when `INDRATRACE_PREFLIGHT=strict`, the startup preflight did not
+            get a 2xx. These are the *only* failures that surface — all are
+            startup mistakes a developer is standing in front of.
         TypeError: an unrecognized keyword argument, as for any function.
 
     Beyond those, this never raises and never blocks the host app (ADR 0003).

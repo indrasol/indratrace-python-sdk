@@ -13,6 +13,8 @@ from indratrace.config import (
     API_KEY_HEADER,
     DEFAULT_ENDPOINT,
     DEFAULT_SERVICE_VERSION,
+    ENDPOINT_SOURCE_DEFAULT,
+    ENDPOINT_SOURCE_ENV,
     ENV_API_KEY,
     ENV_ENDPOINT,
     ENV_ENV,
@@ -55,10 +57,44 @@ class TestDefaults:
         assert cfg.service_name is None
         assert cfg.service_version == DEFAULT_SERVICE_VERSION
 
-    def test_default_endpoint_is_the_ingest_gateway(self) -> None:
-        """The pre-gateway collector port (:4318) no longer terminates SDK
-        traffic; :8088 is the dev gateway that authenticates the key."""
-        assert DEFAULT_ENDPOINT == "http://localhost:8088"
+    def test_default_endpoint_is_the_production_ingest_gateway(self) -> None:
+        """Since 1.1 the default is the PRODUCTION ingest hostname, over HTTPS.
+
+        Not dev: the package is public, and a dev default would route a
+        stranger's telemetry into IndraTrace's dev ClickHouse and drop it every
+        night during the deallocation window. Not localhost: that was a 1.0
+        placeholder, and a placeholder default is what made every caller set
+        `INDRATRACE_ENDPOINT` by hand.
+        """
+        assert DEFAULT_ENDPOINT == "https://ingest.indratrace.com"
+
+    def test_with_only_the_api_key_set_the_endpoint_is_production(
+        self, no_endpoint_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The customer contract: `INDRATRACE_API_KEY` alone is a complete
+        configuration, and it lands on the production gateway."""
+        monkeypatch.setenv(ENV_API_KEY, TEST_API_KEY)
+        cfg = resolve_config()
+        assert cfg.endpoint == "https://ingest.indratrace.com"
+        assert cfg.endpoint_source == ENDPOINT_SOURCE_DEFAULT
+
+    def test_localhost_8088_is_no_longer_a_default_anywhere(self) -> None:
+        """The 1.0 placeholder must not survive in any source file as a default
+        value — only in prose that says it is gone."""
+        import re
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[1] / "src" / "indratrace"
+        offenders = []
+        for path in src.rglob("*.py"):
+            code = "\n".join(
+                line.split("#", 1)[0] for line in path.read_text().splitlines()
+            )
+            # Strip docstrings crudely: triple-quoted blocks.
+            code = re.sub(r'"""[\s\S]*?"""', "", code)
+            if "localhost:8088" in code:
+                offenders.append(path.name)
+        assert not offenders, f"localhost:8088 is still a value in {offenders}"
 
     def test_missing_api_key_raises_actionably(self) -> None:
         with pytest.raises(IndraTraceConfigError) as excinfo:
@@ -187,15 +223,23 @@ class TestTransport:
         the silent-401 failure mode is gone by construction."""
         assert resolve_config(api_key=TEST_API_KEY).headers
 
-    def test_endpoint_env_var_still_overrides(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`INDRATRACE_ENDPOINT` survives as an IndraTrace-developer override for
-        running against a local stack (CONTRIBUTING.md). It is deliberately
-        undocumented for customers — there is no `endpoint` parameter at all."""
+    def test_endpoint_env_var_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`INDRATRACE_ENDPOINT` is the SUPPORTED override (1.1; README
+        § Configuration) for self-hosted deployments and IndraTrace's own dev
+        environment. Still no `endpoint` parameter — the gateway is a property
+        of the deployment, so it is set where the deployment's environment is."""
         monkeypatch.setenv(ENV_ENDPOINT, "http://localhost:9999")
 
-        assert resolve_config(api_key=TEST_API_KEY).endpoint == "http://localhost:9999"
+        cfg = resolve_config(api_key=TEST_API_KEY)
+        assert cfg.endpoint == "http://localhost:9999"
+        assert cfg.endpoint_source == ENDPOINT_SOURCE_ENV
+
+    def test_the_removed_endpoint_parameter_points_at_the_env_var(self) -> None:
+        """The decision, pinned: `endpoint=` stays removed, and the message for
+        anyone who passes it names the override that exists instead."""
+        from indratrace.config import REMOVED_PARAMS
+
+        assert "INDRATRACE_ENDPOINT" in REMOVED_PARAMS["endpoint"]
 
     def test_export_timeout_is_shorter_than_otel_default(self) -> None:
         """OTel defaults to 10s, which stalls shutdown when the gateway is

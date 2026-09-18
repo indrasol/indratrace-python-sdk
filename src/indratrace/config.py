@@ -38,13 +38,18 @@ class IndraTraceConfigError(ValueError):
     """
 
 
-#: Where the SDK ships OTLP. This is the IndraTrace **ingest gateway** — the
-#: component that authenticates the API key and stamps tenant/product/env
-#: (platform ADR 0010 §1). It replaces the pre-gateway collector port (`:4318`),
-#: which no longer terminates SDK traffic. Becomes the production ingest
-#: hostname when it is decided (platform deployment arc phase 5); until then the
-#: dev gateway. One named constant, one place — there is no `endpoint` parameter.
-DEFAULT_ENDPOINT = "http://localhost:8088"
+#: Where the SDK ships OTLP when `INDRATRACE_ENDPOINT` is unset: the IndraTrace
+#: **production** ingest gateway — the component that authenticates the API key
+#: and stamps tenant/product/env (platform ADR 0010 §1).
+#:
+#: **Production, deliberately, and not the dev gateway.** This package is public
+#: on PyPI. A dev default would route a stranger's telemetry into IndraTrace's
+#: dev ClickHouse — and drop it silently every night, because dev is deallocated
+#: 00:00–07:00 Central. IndraTrace's own engineers and self-hosted deployments
+#: set `INDRATRACE_ENDPOINT` (a supported override since 1.1); a customer only
+#: ever holds a key. One named constant, one place — there is no `endpoint`
+#: parameter (see `REMOVED_PARAMS["endpoint"]` for why that stays true).
+DEFAULT_ENDPOINT = "https://ingest.indratrace.com"
 
 DEFAULT_SERVICE_VERSION = "0.0.0"
 
@@ -57,10 +62,14 @@ DEFAULT_EXPORT_TIMEOUT_SECONDS = 3.0
 #: ever sets. Everything else the platform derives from it.
 ENV_API_KEY = "INDRATRACE_API_KEY"
 
-#: **Undocumented developer override**, for running the SDK against a local
-#: stack (see CONTRIBUTING.md). Deliberately absent from the README and from
-#: conventions.md's customer-facing Transport section: a customer points at
-#: IndraTrace by holding an IndraTrace key, not by choosing a host.
+#: **Supported override** (documented since 1.1; README § Configuration) for the
+#: two callers who legitimately send somewhere other than `DEFAULT_ENDPOINT`:
+#: self-hosted IndraTrace deployments, permanently, and IndraTrace's own dev
+#: environment. It is an env var and not a parameter on purpose: which gateway a
+#: deployment talks to is a property of the deployment, set where the rest of its
+#: environment is provisioned — the same code runs against the cloud in one
+#: place and a self-hosted gateway in another without a diff. A customer of the
+#: hosted service never sets it.
 ENV_ENDPOINT = "INDRATRACE_ENDPOINT"
 
 #: Startup preflight mode (see `preflight.py`). `0`/`off`/`false`/`no` disables
@@ -145,7 +154,9 @@ REMOVED_PARAMS: dict[str, str] = {
     "endpoint": (
         "`endpoint` was removed in 1.0 — the SDK ships to the IndraTrace ingest "
         "gateway, and the API key is what routes your telemetry once it lands. "
-        "Drop the argument and call init_observability(api_key=...)."
+        "Drop the argument and call init_observability(api_key=...). Self-hosted "
+        "or dev gateway? Set the INDRATRACE_ENDPOINT environment variable in that "
+        "deployment instead — it is the supported override."
     ),
     "ingest_key": (
         "`ingest_key` was removed in 1.0 — it was the pre-0.5 name for "
