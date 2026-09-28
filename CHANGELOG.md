@@ -8,7 +8,7 @@ PyPI versions are immutable — fixes ship as new versions, never a re-upload.
 
 ## [Unreleased]
 
-## [1.1.0] — 2026-09-17
+## [1.1.0] — 2026-09-28
 
 **The SDK tells you what is wrong, and `INDRATRACE_API_KEY` alone is a complete
 configuration.**
@@ -20,6 +20,25 @@ in signature, so under semver this is `1.1.0` rather than the `1.0.1` it was
 first pencilled in as. (The default endpoint changing from a `localhost`
 placeholder — which never worked for anyone outside a local stack — to the real
 hostname is a fix, not a break.)
+
+### Security
+
+- **Fixed: the default endpoint was plain HTTP.** 1.0.0 defaulted to
+  `http://localhost:8088`. A caller who set only `INDRATRACE_API_KEY` got a
+  cleartext default, and the `x-indratrace-key` header carries the key on every
+  export. The default is now `https://ingest.indratrace.com`, so the
+  zero-configuration path is always TLS. **Upgrade from 1.0.0.**
+- **A plain `http://` endpoint that is not loopback now logs a WARNING** at
+  `init_observability()`: the key and all telemetry would cross the network
+  unencrypted. It warns but does not block, because a self-hosted gateway on a
+  trusted private network may use plain HTTP on purpose. `localhost`,
+  `127.0.0.0/8` and `::1` do not warn.
+- **`ObsConfig.api_key` is excluded from `repr()`**, so a printed or logged
+  config never contains the key.
+- Repository and release hardening, with no change to the package's behaviour:
+  CI and release workflows run with read-only default token permissions, every
+  GitHub Action is pinned to a commit SHA, a `pip-audit` job checks
+  dependencies, and Dependabot tracks pip and Actions updates.
 
 ### Added
 
@@ -73,6 +92,10 @@ hostname is a fix, not a break.)
 
 - The `debug=True` export narration is now built on the same always-on observer
   the failure surfacing uses; its lines are unchanged.
+
+- Package metadata uses PEP 639: `license = "Apache-2.0"` (an SPDX expression)
+  with `license-files`, and the build needs `setuptools>=77`. The redundant
+  `License ::` classifier is gone. The license itself is unchanged.
 
 ### Decided: there is still no `init_observability(endpoint=...)`
 

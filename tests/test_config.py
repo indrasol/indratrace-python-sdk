@@ -24,6 +24,7 @@ from indratrace.config import (
     IndraTraceConfigError,
     ObsConfig,
     build_resource,
+    plaintext_endpoint_warning,
     resolve_config,
     warn_about_removed_env_vars,
 )
@@ -321,3 +322,50 @@ class TestResource:
         attrs = build_resource(resolve_config(api_key=TEST_API_KEY)).attributes
         assert attrs["telemetry.sdk.language"] == "python"
         assert "telemetry.sdk.version" in attrs
+
+
+class TestSecretHandling:
+    def test_repr_never_contains_the_api_key(self) -> None:
+        """A logged or printed config must not leak the credential."""
+        secret = "it_live_do-not-log-me-7f3a"
+        cfg = resolve_config(api_key=secret)
+
+        assert secret not in repr(cfg)
+        assert secret not in str(cfg)
+        assert cfg.api_key == secret, "hidden from repr, still used"
+
+
+class TestPlaintextEndpointWarning:
+    """An explicit http:// endpoint off-box warns; it never blocks."""
+
+    def test_the_default_endpoint_is_https(self, no_endpoint_env: None) -> None:
+        cfg = resolve_config(api_key=TEST_API_KEY)
+
+        assert cfg.endpoint.startswith("https://")
+        assert plaintext_endpoint_warning(cfg.endpoint) is None
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://ingest.example.com",
+            "http://10.0.0.5:8088",
+            "HTTP://gateway.internal:4318/",
+        ],
+    )
+    def test_remote_http_warns(self, endpoint: str) -> None:
+        message = plaintext_endpoint_warning(endpoint)
+
+        assert message is not None
+        assert "unencrypted" in message
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://ingest.example.com",
+            "http://localhost:8088",
+            "http://127.0.0.1:1",
+            "http://[::1]:4318",
+        ],
+    )
+    def test_https_and_loopback_do_not_warn(self, endpoint: str) -> None:
+        assert plaintext_endpoint_warning(endpoint) is None

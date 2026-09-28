@@ -34,6 +34,7 @@ from .config import (
     IndraTraceConfigError,
     ObsConfig,
     build_resource,
+    plaintext_endpoint_warning,
     resolve_capture_content,
     resolve_config,
     resolve_debug,
@@ -691,6 +692,11 @@ def init_observability(
     debug_on = resolve_debug(debug)
     if debug_on:
         _debug_handler, _debug_level_before = _enable_debug_logging()
+
+    # Warn, never block: a self-hosted gateway may be plain HTTP on purpose.
+    plaintext_warning = plaintext_endpoint_warning(cfg.endpoint)
+    if plaintext_warning:
+        logger.warning("indratrace: %s", plaintext_warning)
 
     # One short request to the gateway, and a named diagnosis if it did not
     # come back 2xx. Before the providers exist so that `strict` mode raises

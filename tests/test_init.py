@@ -16,6 +16,7 @@ from indratrace import IndraTraceConfigError, init_observability
 from indratrace.config import (
     API_KEY_HEADER,
     ENV_API_KEY,
+    ENV_ENDPOINT,
     ENV_ENV,
     ENV_KEY,
     ENV_PRODUCT,
@@ -473,3 +474,25 @@ class TestFastApiInstrumentation:
     def test_can_be_opted_out(self) -> None:
         init_observability(api_key="it_test_demo", instrument_fastapi=False)
         assert not self._is_instrumented()
+
+
+class TestPlaintextEndpoint:
+    def test_remote_http_endpoint_warns_and_still_initializes(
+        self, monkeypatch: pytest.MonkeyPatch, sdk_log: list[logging.LogRecord]
+    ) -> None:
+        monkeypatch.setenv(ENV_ENDPOINT, "http://gateway.example.invalid:4318")
+
+        init_observability(api_key=TEST_API_KEY, instrument_fastapi=False)
+
+        warnings = sdk_warnings(sdk_log)
+        assert len(warnings) == 1
+        assert "unencrypted" in warnings[0].getMessage()
+        assert TEST_API_KEY not in warnings[0].getMessage()
+        assert _get_provider() is not None, "a warning, never a block"
+
+    def test_loopback_http_endpoint_does_not_warn(
+        self, sdk_log: list[logging.LogRecord]
+    ) -> None:
+        init_observability(api_key=TEST_API_KEY, instrument_fastapi=False)
+
+        assert sdk_warnings(sdk_log) == []

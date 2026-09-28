@@ -15,9 +15,11 @@ credential and two labels about the *deployable* — `service.name`, `service.ve
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from opentelemetry.sdk.resources import Resource
 
@@ -194,7 +196,8 @@ class ObsConfig:
     environment — the gateway derives those from `api_key` (ADR 0009).
     """
 
-    api_key: str
+    #: `repr=False` so a logged or printed config never carries the credential.
+    api_key: str = field(repr=False)
     endpoint: str = DEFAULT_ENDPOINT
     #: `ENDPOINT_SOURCE_DEFAULT` or `ENDPOINT_SOURCE_ENV` — which one supplied
     #: `endpoint`. Diagnostics only; never shapes transport.
@@ -293,6 +296,35 @@ def resolve_config(
         # Read at call time, not bound as a dataclass default, so the test
         # suite can shrink it and not pay a real export backoff per teardown.
         export_timeout_seconds=DEFAULT_EXPORT_TIMEOUT_SECONDS,
+    )
+
+
+def _is_loopback_host(host: str) -> bool:
+    """`localhost`, `127.0.0.0/8` or `::1` — traffic that never leaves the box."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def plaintext_endpoint_warning(endpoint: str) -> str | None:
+    """The warning for an `http://` endpoint that is not loopback, else None.
+
+    Plain HTTP to another host sends the API key (the `x-indratrace-key`
+    header) and every span, log and metric unencrypted across the network. Only
+    reachable through `INDRATRACE_ENDPOINT` — the default is HTTPS. A warning,
+    not a refusal: a self-hosted gateway on a private network may be plain HTTP
+    on purpose, and fail-silence (ADR 0003) means config never blocks export.
+    """
+    parts = urlsplit(endpoint)
+    if parts.scheme.lower() != "http" or _is_loopback_host(parts.hostname or ""):
+        return None
+    return (
+        f"INDRATRACE_ENDPOINT is plain http:// ({parts.hostname}): the API key and "
+        "all telemetry will cross the network unencrypted. Use an https:// "
+        "endpoint unless this network is trusted."
     )
 
 
