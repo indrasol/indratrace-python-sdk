@@ -252,12 +252,20 @@ class TestStatusRows:
         assert d.cause == RATE_LIMITED
         assert d.level == logging.WARNING
 
-    def test_502_is_the_collector_and_mentions_the_dev_window(self) -> None:
+    def test_502_is_the_collector(self) -> None:
         d = diagnose_response(problem(502, "collector unreachable", "x"), cfg())
         assert d.cause == COLLECTOR_DOWN
         assert "accepted the key" in d.message
-        assert "00:00" in d.message and "Central" in d.message
+        assert "cannot reach the collector" in d.message
         assert d.level == logging.WARNING
+
+    def test_no_diagnosis_prints_an_internal_schedule(self) -> None:
+        """Operational details of IndraTrace's own environments are not a
+        user's business and must never appear in a message they read."""
+        for status in (401, 402, 404, 429, 500, 502, 503):
+            message = diagnose_response(problem(status, "t", "d"), cfg()).message
+            for internal in ("00:00", "Central", "dealloc", "dev environment"):
+                assert internal not in message, (status, internal)
 
     def test_503_is_the_control_plane(self) -> None:
         d = diagnose_response(problem(503, "control plane unavailable", "x"), cfg())

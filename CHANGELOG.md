@@ -70,9 +70,9 @@ hostname is a fix, not a break.)
   exporter errors by design, so a broken deployment used to be silent. Now, after
   three consecutive failed batches, one ERROR carries the same diagnosis as the
   preflight; further failures are reported at most once every five minutes; and
-  recovery logs one INFO line. The back-off is deliberate: IndraTrace's dev
-  collector is deallocated overnight, and an uncapped per-batch error would fill
-  a deployed service's logs for seven hours a night and page someone.
+  recovery logs one INFO line. The back-off is deliberate: during a long outage,
+  an uncapped per-batch error would fill a deployed service's logs and page
+  someone.
 - **`INDRATRACE_ENDPOINT` is a supported, documented override** (README
   § Configuration). Two callers set it, permanently: self-hosted IndraTrace
   deployments, and IndraTrace's own dev environment. A customer of the hosted
@@ -86,12 +86,11 @@ hostname is a fix, not a break.)
   caller to also set `INDRATRACE_ENDPOINT` — is not a default anywhere any more
   (a test greps for it).
 
-  **Why production and not dev — do not "fix" this.** The package is public on
-  PyPI. A dev default would route any stranger's telemetry into IndraTrace's dev
-  ClickHouse, and dev is deallocated 00:00–07:00 Central every day, so it would
-  also drop that telemetry silently every night. The dev hostname belongs in the
-  dev environment's provisioning (`INDRATRACE_ENDPOINT`), not in a package
-  anyone can install.
+  **Why production and not a development gateway — do not "fix" this.** The
+  package is public on PyPI, and a development default would route any
+  stranger's telemetry somewhere with no production guarantees. A development
+  gateway belongs in that environment's own provisioning
+  (`INDRATRACE_ENDPOINT`), not in a package anyone can install.
 
 - The message for the removed `endpoint=` parameter now points at
   `INDRATRACE_ENDPOINT` for self-hosted and dev callers.

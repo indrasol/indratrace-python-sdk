@@ -62,9 +62,9 @@ class TestDefaults:
     def test_default_endpoint_is_the_production_ingest_gateway(self) -> None:
         """Since 1.1 the default is the PRODUCTION ingest hostname, over HTTPS.
 
-        Not dev: the package is public, and a dev default would route a
-        stranger's telemetry into IndraTrace's dev ClickHouse and drop it every
-        night during the deallocation window. Not localhost: that was a 1.0
+        Not a development gateway: the package is public, and a development
+        default would route a stranger's telemetry somewhere with no production
+        guarantees. Not localhost: that was a 1.0
         placeholder, and a placeholder default is what made every caller set
         `INDRATRACE_ENDPOINT` by hand.
         """

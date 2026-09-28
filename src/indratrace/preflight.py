@@ -61,9 +61,9 @@ logger = logging.getLogger("indratrace")
 FAILURE_THRESHOLD = 3
 
 #: After the first ERROR, re-log at most this often (seconds). Five minutes:
-#: the dev collector is deallocated 00:00–07:00 Central every night, so an
-#: uncapped per-batch error would fill a deployed service's logs for seven
-#: hours and page someone. 84 lines a night is a signal; 5,000 is a page.
+#: during a long outage an uncapped per-batch error would fill a deployed
+#: service's logs and page someone. A dozen lines an hour is a signal;
+#: thousands is a page.
 REPORT_INTERVAL_SECONDS = 300.0
 
 #: Hosts that mean "this machine". A refused connection to one of these is a
@@ -287,9 +287,8 @@ def _msg_collector_down(cfg: ObsConfig, detail: str) -> str:
     return (
         f"IndraTrace: the gateway at {_host(cfg.endpoint)} accepted the key but "
         f"cannot reach the collector behind it (HTTP 502{_quoted(detail)}). "
-        f"Nothing to fix on your side. On the dev environment the collector is "
-        f"deallocated 00:00–07:00 Central every day, and telemetry sent in that "
-        f"window is dropped, not queued."
+        f"Nothing to fix on your side; the SDK retries, and telemetry it cannot "
+        f"deliver is dropped, not queued."
     )
 
 

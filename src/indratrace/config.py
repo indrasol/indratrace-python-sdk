@@ -44,10 +44,10 @@ class IndraTraceConfigError(ValueError):
 #: **production** ingest gateway — the component that authenticates the API key
 #: and stamps tenant/product/env (platform ADR 0010 §1).
 #:
-#: **Production, deliberately, and not the dev gateway.** This package is public
-#: on PyPI. A dev default would route a stranger's telemetry into IndraTrace's
-#: dev ClickHouse — and drop it silently every night, because dev is deallocated
-#: 00:00–07:00 Central. IndraTrace's own engineers and self-hosted deployments
+#: **Production, deliberately, and not a development gateway.** This package is
+#: public on PyPI, and a development default would route a stranger's telemetry
+#: somewhere with no production guarantees. IndraTrace's own engineers and
+#: self-hosted deployments
 #: set `INDRATRACE_ENDPOINT` (a supported override since 1.1); a customer only
 #: ever holds a key. One named constant, one place — there is no `endpoint`
 #: parameter (see `REMOVED_PARAMS["endpoint"]` for why that stays true).
