@@ -47,23 +47,24 @@ refused connection doesn't cost real backoff on teardown.
 
 ### Running against a local stack — `INDRATRACE_ENDPOINT`
 
-The SDK has no `endpoint` parameter: it ships to the IndraTrace ingest gateway,
-and the API key routes the telemetry once it lands (ADR 0009). A customer never
+The SDK has no `endpoint` parameter: it ships to the IndraTrace ingest gateway
+(`config.DEFAULT_ENDPOINT`, the production hostname), and the API key routes the
+telemetry once it lands (ADR 0009). A customer of the hosted service never
 chooses a host.
 
-For **IndraTrace development** there is one undocumented escape hatch — the
-`INDRATRACE_ENDPOINT` env var — so you can point the SDK at a gateway or
-Collector running on your own machine:
+`INDRATRACE_ENDPOINT` is the **supported override** (documented in the README
+since 1.1) for self-hosted deployments and for IndraTrace's own dev environment —
+and it is also how you point the SDK at a gateway or Collector on your own
+machine:
 
 ```bash
 export INDRATRACE_ENDPOINT="http://localhost:4318"   # e.g. the dev/ harness
+export INDRATRACE_PREFLIGHT=0                        # the harness is a plain Collector; skip the gateway check
 ```
 
-It overrides `config.DEFAULT_ENDPOINT` and is what `tests/integration/conftest.py`
-sets for the harness suite. It is deliberately absent from the README and from
-`docs/conventions.md`'s Transport section — please keep it that way. If a
-customer needs to send telemetry somewhere else, that is a product decision, not
-an env var we mention in passing.
+It is what `tests/integration/conftest.py` sets for the harness suite. Keep it an
+env var: the gateway is a property of the deployment, and the decision not to
+add an `endpoint=` parameter is recorded in the 1.1.0 changelog entry.
 
 ## Style & linting
 

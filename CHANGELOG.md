@@ -8,6 +8,94 @@ PyPI versions are immutable — fixes ship as new versions, never a re-upload.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-09-17
+
+**The SDK tells you what is wrong, and `INDRATRACE_API_KEY` alone is a complete
+configuration.**
+
+A minor version, not a patch: the startup preflight and the export-failure
+surfacing are new behaviour with new switches, and `INDRATRACE_ENDPOINT` is
+newly a documented part of the surface. Nothing public was removed or changed
+in signature, so under semver this is `1.1.0` rather than the `1.0.1` it was
+first pencilled in as. (The default endpoint changing from a `localhost`
+placeholder — which never worked for anyone outside a local stack — to the real
+hostname is a fix, not a break.)
+
+### Added
+
+- **Startup preflight.** `init_observability()` makes one short authenticated
+  request to the gateway (an empty OTLP traces export, so the gateway's real
+  401/402 are what gets read — a health check would prove only reachability)
+  and, if the answer is not 2xx, logs **one** paragraph naming the cause:
+  hostname does not resolve; **outbound egress blocked** (a connect that never
+  completes — firewall, NSG, UDR or proxy must allow outbound HTTPS 443 to the
+  gateway host; the message includes the `curl` to confirm it); nothing
+  listening on `localhost` (`INDRATRACE_ENDPOINT` unset on 1.0, or pointing at
+  a local gateway that is not running); TLS verification failed (intercepting
+  proxy — `REQUESTS_CA_BUNDLE`); **401** (the key — including stray whitespace
+  or a trailing newline from copy-paste); **402 no card on file** (a non-internal
+  organisation, usually a workspace created with a personal email address) or
+  **402 suspended**; **404/405** (the endpoint is not the ingest gateway);
+  429, 502 (the collector behind the gateway is down) and 503 (control plane).
+  Non-fatal by default: your app keeps running. ~2 s connect / 3 s read
+  timeout. Never logs the key.
+  - `INDRATRACE_PREFLIGHT=strict` raises `IndraTraceConfigError` instead, for CI.
+  - `INDRATRACE_PREFLIGHT=0` makes no network call at all, for air-gapped hosts.
+- **Export failures are surfaced.** OpenTelemetry's batch processors swallow
+  exporter errors by design, so a broken deployment used to be silent. Now, after
+  three consecutive failed batches, one ERROR carries the same diagnosis as the
+  preflight; further failures are reported at most once every five minutes; and
+  recovery logs one INFO line. The back-off is deliberate: IndraTrace's dev
+  collector is deallocated overnight, and an uncapped per-batch error would fill
+  a deployed service's logs for seven hours a night and page someone.
+- **`INDRATRACE_ENDPOINT` is a supported, documented override** (README
+  § Configuration). Two callers set it, permanently: self-hosted IndraTrace
+  deployments, and IndraTrace's own dev environment. A customer of the hosted
+  service never does.
+
+### Changed
+
+- **`DEFAULT_ENDPOINT` is `https://ingest.indratrace.com`, the production
+  ingest gateway.** With only `INDRATRACE_API_KEY` set, telemetry lands in
+  production. `http://localhost:8088` — the 1.0 placeholder that forced every
+  caller to also set `INDRATRACE_ENDPOINT` — is not a default anywhere any more
+  (a test greps for it).
+
+  **Why production and not dev — do not "fix" this.** The package is public on
+  PyPI. A dev default would route any stranger's telemetry into IndraTrace's dev
+  ClickHouse, and dev is deallocated 00:00–07:00 Central every day, so it would
+  also drop that telemetry silently every night. The dev hostname belongs in the
+  dev environment's provisioning (`INDRATRACE_ENDPOINT`), not in a package
+  anyone can install.
+
+- The message for the removed `endpoint=` parameter now points at
+  `INDRATRACE_ENDPOINT` for self-hosted and dev callers.
+
+- The `debug=True` export narration is now built on the same always-on observer
+  the failure surfacing uses; its lines are unchanged.
+
+### Decided: there is still no `init_observability(endpoint=...)`
+
+Considered and rejected for 1.1. The argument for it: a self-hosted caller
+configuring in code should not need a process-wide env var. Against, and
+decisive:
+
+1. The gateway a deployment talks to is a property of the **deployment**, not of
+   the code — the same service runs against the hosted gateway in one place and
+   a self-hosted one in another. An env var is the deployment-level knob; a
+   parameter would put a per-deployment fact into source.
+2. This release exists to make configuration singular. A parameter is a second
+   spelling of one setting, with a precedence rule to document and a new branch
+   in every diagnosis ("as set by the argument" vs the env var vs the default).
+3. `endpoint=` was removed in 1.0.0 with a raising message. Re-adding it one
+   minor later, with different semantics, is churn for every 0.x migrator who
+   just deleted it.
+4. It is the OpenTelemetry norm: `OTEL_EXPORTER_OTLP_ENDPOINT` is an env var.
+
+A self-hosted caller who insists on configuring in code has a one-liner:
+`os.environ.setdefault("INDRATRACE_ENDPOINT", ...)` before init. If a real
+customer need for the parameter appears, it goes through an ADR, not a hotfix.
+
 ## [1.0.0] — 2026-09-03
 
 **The whole integration is one API key.**
