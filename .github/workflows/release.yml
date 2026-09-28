@@ -7,13 +7,20 @@ on:
     tags:
       - "v*"
 
+# Least privilege: the GITHUB_TOKEN can only read. A job that needs more asks
+# for it at job level.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: build sdist + wheel
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
 
@@ -40,7 +47,7 @@ jobs:
           pip install twine
           twine check dist/*
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: dist
           path: dist/
@@ -53,11 +60,12 @@ jobs:
     # workflow filename (docs/00-setup.md). No API token anywhere in the repo.
     environment: pypi
     permissions:
+      contents: read
       id-token: write   # mint the short-lived OIDC token PyPI trusts
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: dist
           path: dist/
       - name: Publish
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
