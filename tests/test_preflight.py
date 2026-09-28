@@ -82,7 +82,7 @@ class _Response:
 
 
 def problem(status: int, title: str, detail: str = "") -> _Response:
-    """The gateway's RFC 7807 shape (`ingest/app.py::_problem`)."""
+    """The gateway's RFC 7807 problem shape."""
     return _Response(status, {"title": title, "detail": detail, "status": status})
 
 
@@ -201,7 +201,7 @@ class TestTransportRows:
 
 
 class TestStatusRows:
-    """Every branch is a response `ingest/app.py::_handle` can produce."""
+    """Every branch is a response the ingest gateway can produce."""
 
     def test_2xx_is_silent(self) -> None:
         d = diagnose_response(_Response(200), cfg())
@@ -219,7 +219,7 @@ class TestStatusRows:
         assert "INDRATRACE_API_KEY" in d.message
 
     def test_402_no_card_says_so_and_names_the_personal_email_cause(self) -> None:
-        """THE other row. Verbatim title from `ingest/app.py::NO_CARD_TITLE`."""
+        """THE other row. The gateway's verbatim no-card title."""
         detail = (
             "save a card at Settings > Usage & billing to start sending - nothing "
             "is charged until the month ends"

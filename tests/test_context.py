@@ -409,7 +409,7 @@ class TestSessionSurvivesBrokenBaggage:
 
 class TestSessionSpanProcessorFlush:
     def test_force_flush_reports_success(self) -> None:
-        """On OpenTelemetry <=1.29 the inherited `force_flush` returned None, and
+        """On OpenTelemetry <=1.41 the inherited `force_flush` returned None, and
         `TracerProvider.force_flush` stops at the first falsy processor, so the
         batch exporter registered after this one was never flushed."""
         assert SessionSpanProcessor().force_flush() is True

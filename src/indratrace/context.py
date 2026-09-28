@@ -75,8 +75,8 @@ class SessionSpanProcessor(SpanProcessor):
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """Nothing buffered here, so the flush always succeeds.
 
-        Overridden because the base class returns `None` on older OpenTelemetry
-        (1.29 and earlier). `TracerProvider.force_flush` stops at the first
+        Overridden because the base class returns `None` on OpenTelemetry 1.41
+        and earlier. `TracerProvider.force_flush` stops at the first
         processor that returns a falsy value, and this processor is registered
         before the batch exporter, so the inherited `None` meant a host app's
         `force_flush()` never exported our spans.

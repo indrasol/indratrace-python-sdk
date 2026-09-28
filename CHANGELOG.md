@@ -35,6 +35,12 @@ hostname is a fix, not a break.)
   `127.0.0.0/8` and `::1` do not warn.
 - **`ObsConfig.api_key` is excluded from `repr()`**, so a printed or logged
   config never contains the key.
+- 1.0.x could log the API key in plain text when the key contained a stray
+  newline (OpenTelemetry exporter and debug output). Upgrade to 1.1.0.
+- **Credentials in the endpoint URL are never shown.** An
+  `INDRATRACE_ENDPOINT` such as `https://user:pass@host` is displayed as
+  `https://***@host` in the init log line, the `debug=True` banner, every
+  diagnosis and export-failure line.
 - **The API key is redacted from transport-error text.** If a key contains a
   stray newline (a copy-paste accident), `requests` quotes the whole header
   value in its `InvalidHeader` error. That text reached OpenTelemetry's own
@@ -112,9 +118,10 @@ hostname is a fix, not a break.)
 ### Fixed
 
 - A host app's `TracerProvider.force_flush()` now exports IndraTrace's spans on
-  older OpenTelemetry. The session processor inherited a `force_flush` that
-  returned `None`, and the provider stops at the first processor that does not
-  report success, so the batch exporter behind it was never flushed. This
+  OpenTelemetry 1.41 and earlier. The session processor inherited a
+  `force_flush` that returned `None`, and the provider stops at the first
+  processor that does not report success, so the batch exporter behind it was
+  never flushed. This
   mattered most to serverless functions and short-lived jobs that flush before
   exiting.
 

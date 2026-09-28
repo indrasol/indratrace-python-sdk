@@ -193,7 +193,7 @@ def _scrub_exception(exc: BaseException, api_key: str | None) -> None:
     place, before anything formats it.
 
     A key with a stray newline makes `requests` raise `InvalidHeader` quoting
-    the header value. On OpenTelemetry <=1.29 that exception escapes the
+    the header value. On older OpenTelemetry releases that exception escapes the
     exporter and the batch processor logs it, with a traceback, under its own
     logger, which a logging filter on the exporter loggers cannot reach.
     Rewriting the exception's `args` fixes every later `str(exc)` and traceback.

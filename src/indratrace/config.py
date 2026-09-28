@@ -43,7 +43,7 @@ class IndraTraceConfigError(ValueError):
 
 #: Where the SDK ships OTLP when `INDRATRACE_ENDPOINT` is unset: the IndraTrace
 #: **production** ingest gateway — the component that authenticates the API key
-#: and stamps tenant/product/env (platform ADR 0010 §1).
+#: and stamps tenant/product/env (ADR 0009).
 #:
 #: **Production, deliberately, and not a development gateway.** This package is
 #: public on PyPI, and a development default would route a stranger's telemetry
@@ -416,8 +416,8 @@ def resolve_preflight_mode() -> str:
     misconfigured service to fail its build rather than boot and drop data.
 
     Env-only, no argument: the mode is a property of *where* the process runs
-    (a CI runner, an air-gapped box), not of the code, and this slice exists to
-    keep configuration singular.
+    (a CI runner, an air-gapped box), not of the code, and configuration stays
+    singular.
     """
     raw = (os.getenv(ENV_PREFLIGHT) or "").strip().lower()
     if raw in _FALSY:

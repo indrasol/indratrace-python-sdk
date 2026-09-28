@@ -19,10 +19,9 @@ Two mechanisms, one diagnosis table:
   the same diagnosis; after that, at most one line per `REPORT_INTERVAL_SECONDS`.
   Recovery is one INFO line.
 
-Both read the gateway's *existing* responses (`ingest/app.py` in the platform
-repo): the RFC 7807 `problem+json` body's `title` distinguishes the two 402s,
-and the 401 detail is deliberately generic there (key-enumeration defence), so
-nothing here depends on it.
+Both read the ingest gateway's responses: the RFC 7807 `problem+json` body's
+`title` distinguishes the two 402s, and the 401 detail is deliberately generic
+(key-enumeration defence), so nothing here depends on it.
 
 The diagnosis never contains the API key. Every message is built from the
 configured endpoint, the HTTP status, and the gateway's own `title`/`detail` —
@@ -71,9 +70,8 @@ REPORT_INTERVAL_SECONDS = 300.0
 #: configuration error, not a network one.
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
-#: The two 402 titles the gateway can send, verbatim from `ingest/app.py`
-#: (`NO_CARD_TITLE`, `SUSPENDED_TITLE`). Same status, same shape, different
-#: cause — the title is the only thing that tells them apart.
+#: The two 402 titles the gateway can send, verbatim. Same status, same shape,
+#: different cause — the title is the only thing that tells them apart.
 NO_CARD_TITLE = "no card on file"
 SUSPENDED_TITLE = "account suspended"
 
@@ -159,7 +157,7 @@ def _where(cfg: ObsConfig) -> str:
 
 
 def _curl(cfg: ObsConfig) -> str:
-    """The reachability check from docs/ENVIRONMENTS.md, against `/health`."""
+    """A reachability check the user can run themselves, against `/health`."""
     base = cfg.endpoint.rstrip("/")
     return f"curl -sS -o /dev/null -w '%{{http_code}}\\n' {base}/health"
 
@@ -418,9 +416,9 @@ def _classify_exception(exc: BaseException, cfg: ObsConfig) -> Diagnosis:
 def _classify_status(status: int, title: str, detail: str, cfg: ObsConfig) -> Diagnosis:
     """Map an HTTP status (+ the gateway's problem body) to a cause.
 
-    Every branch here is a response `ingest/app.py::_handle` can actually
-    produce for an empty, authenticated POST — read from the source, not from
-    a summary of it — plus 404/405 for "this is not the gateway at all".
+    Every branch here is a response the ingest gateway can actually produce
+    for an empty, authenticated POST, plus 404/405 for "this is not the gateway
+    at all".
     """
     if 200 <= status < 300:
         return Diagnosis(OK, "", status)
