@@ -1,8 +1,9 @@
 # Conventions — the attribute contract
 
 *Living doc. **This is the real API between the SDK and the platform.** The two
-repos are compatible if and only if they agree on this file. Change it only via
-a new ADR, and mirror changes in the platform repo.*
+sides are compatible if and only if they agree on this file. Change it only via
+a new ADR; the IndraTrace backend (closed source) consumes this contract and
+does not fork it.*
 
 ## Resource attributes
 
@@ -73,7 +74,7 @@ attribute, both lists move together.**
   > truth here and the manual fallback (`record_llm_usage`) stamps the same
   > drifted name, so hand- and auto-instrumented spans are identical. **The
   > platform must alias the two at query time** until this contract and the
-  > platform repo are reconciled. Flagged for product-owner review.
+  > IndraTrace backend are reconciled.
   >
   > | Canonical (this doc, pre-drift) | Actually on the wire (pinned instrumentors) |
   > |---|---|

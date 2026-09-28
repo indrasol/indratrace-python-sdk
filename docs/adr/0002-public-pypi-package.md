@@ -16,7 +16,7 @@ to the hosted platform, and get an ingest key (the Anthropic/OpenAI SDK model).
 - Internal products install from public PyPI like any dependency.
 
 ## Alternatives considered
-- **Private Azure Artifacts:** considered for the pre-1.0 churn phase; rejected
+- **A private package feed:** considered for the pre-1.0 churn phase; rejected
   as primary channel since the name was reservable now and the package carries
   no secrets. Nothing prevents publishing dev builds privately if needed.
 

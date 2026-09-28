@@ -9,9 +9,9 @@ library that products install and upgrade on their own schedule, and a platform
 (Collector, ClickHouse, FastAPI, Next.js) that we deploy and control centrally.
 
 ## Decision
-Two repositories:
-- `indratrace-python-sdk` (this repo) → https://github.com/indrasol/indratrace-python-sdk
-- `indratrace-platform` → https://github.com/indrasol/indratrace-platform
+Two separate codebases:
+- `indratrace-python-sdk` (this repo, public) → https://github.com/indrasol/indratrace-python-sdk
+- the IndraTrace backend (closed source), which is developed and deployed separately
 
 ## Alternatives considered
 - **Single monorepo:** simpler at first, but platform dependencies bleed into the

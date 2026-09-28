@@ -3,8 +3,8 @@
 Thin OpenTelemetry wrapper that lets any product plug into the IndraTrace
 observability platform with one init call. Public API is exactly:
 `init_observability`, `trace_agent`, `trace_tool`. Published publicly on PyPI
-as `indratrace`. The platform (Collector/ClickHouse/FastAPI/Next.js UI) lives
-in a separate repo (`indratrace-platform`) — never import from or depend on it.
+as `indratrace`. The platform is the IndraTrace backend (closed source) —
+never import from or depend on it.
 
 ## Stack
 - Library: Python ≥3.9, OpenTelemetry SDK, `src/` layout, setuptools via

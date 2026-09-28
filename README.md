@@ -529,8 +529,9 @@ removed in 1.0; passing it still raises, and the message now points here.)
 
 **Whatever the endpoint, the host that runs your app needs outbound HTTPS on
 port 443 to it.** Plain cloud hosts and laptops have that; anything behind a
-corporate firewall, an Azure NSG/UDR, or an egress proxy may not — and the
-symptom is silence, which is exactly what the next section is for.
+corporate firewall, a cloud network security group or route table, or an egress
+proxy may not — and the symptom is silence, which is exactly what the next
+section is for.
 
 ### What `init_observability()` checks at startup
 

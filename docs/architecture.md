@@ -1,7 +1,8 @@
 # Architecture — indratrace SDK
 
-*Living doc. Describes the current state of this repo. For the full platform
-picture, see the platform repo (`indratrace-platform`).*
+*Living doc. Describes the current state of this repo. The platform it ships
+to is the IndraTrace backend (closed source); this SDK talks to it only over
+OTLP and the contract in `docs/conventions.md`.*
 
 ## Where this SDK sits
 
