@@ -8,6 +8,7 @@ gateway stamps from the key are gone from the wire.
 from __future__ import annotations
 
 import pytest
+from opentelemetry.sdk.resources import Resource
 
 from indratrace.config import (
     API_KEY_HEADER,
@@ -293,7 +294,10 @@ class TestResource:
         default honors OTEL_SERVICE_NAME, which stamping over would clobber."""
         attrs = build_resource(resolve_config(api_key=TEST_API_KEY)).attributes
 
-        assert attrs["service.name"] == "unknown_service"
+        # Compared with OTel's own default in this process, not a literal: it
+        # is `unknown_service` on older OTel and `unknown_service:<process>`
+        # on 1.45+. The claim is only that we did not stamp over it.
+        assert attrs["service.name"] == Resource.create({}).attributes["service.name"]
 
     def test_service_name_respects_otel_service_name(
         self, monkeypatch: pytest.MonkeyPatch

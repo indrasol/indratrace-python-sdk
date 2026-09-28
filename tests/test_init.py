@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -31,7 +34,12 @@ from indratrace.init import (
 )
 from indratrace.version import __version__
 
-from .conftest import TEST_API_KEY, sdk_warnings
+from .conftest import (
+    PRODUCTION_EXPORT_TIMEOUT_SECONDS,
+    TEST_API_KEY,
+    TIMEOUT_ATTR,
+    sdk_warnings,
+)
 from .test_config import REQUIRED_RESOURCE_ATTRS
 
 
@@ -147,16 +155,18 @@ class TestResourceOnSpans:
                 f"the SDK must not send {attr!r} — the gateway stamps it"
             )
 
-    def test_api_key_is_read_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_api_key_is_read_from_env(
+        self, monkeypatch: pytest.MonkeyPatch, wire: list[_Capture]
+    ) -> None:
         """`INDRATRACE_API_KEY` is the one supported env var, and it works."""
-        from indratrace.config import API_KEY_HEADER
-
         monkeypatch.setenv(ENV_API_KEY, "it_test_from_env")
 
         init_observability(instrument_fastapi=False)
+        _emit_and_flush_all_signals()
 
-        assert _get_provider() is not None
-        assert _provider_export_headers() == {API_KEY_HEADER: "it_test_from_env"}
+        assert _keys_by_path(wire) == dict.fromkeys(
+            ALL_SIGNAL_PATHS, {"it_test_from_env"}
+        )
 
 
 class TestApiKeyIsRequired:
@@ -186,14 +196,15 @@ class TestApiKeyIsRequired:
         with pytest.raises(ValueError, match="No API key"):
             init_observability(instrument_fastapi=False)
 
-    def test_a_key_of_any_shape_is_still_sent(self) -> None:
-        """§2.3: the SDK checks presence, never format — the gateway is the one
+    def test_a_key_of_any_shape_is_still_sent(self, wire: list[_Capture]) -> None:
+        """The SDK checks presence, never format — the gateway is the one
         authority on whether a key is valid."""
-        from indratrace.config import API_KEY_HEADER
-
         init_observability("not-an-it-prefixed-key", instrument_fastapi=False)
+        _emit_and_flush_all_signals()
 
-        assert _provider_export_headers() == {API_KEY_HEADER: "not-an-it-prefixed-key"}
+        assert _keys_by_path(wire) == dict.fromkeys(
+            ALL_SIGNAL_PATHS, {"not-an-it-prefixed-key"}
+        )
 
     def test_api_key_is_the_only_positional_argument(self) -> None:
         """The one-liner is `init_observability("it_live_...")`; everything else is
@@ -283,44 +294,81 @@ class TestRemovedEnvVars:
         assert _get_provider() is not None
 
 
-def _provider_export_headers() -> dict[str, str]:
-    """The auth headers the built span exporter will send, read back off the
-    provider init_observability wired — the wire behavior, not the config."""
-    provider = _get_provider()
-    assert provider is not None
-    # Walk the batch processor to its OTLP exporter and read its headers.
-    for processor in provider._active_span_processor._span_processors:
-        exporter = getattr(processor, "span_exporter", None)
-        headers = getattr(exporter, "_headers", None)
-        if headers:
-            # OTLP stores headers lowercased as a dict; return it verbatim.
-            return dict(headers)
-    return {}
+class _Capture(NamedTuple):
+    """One request the fake gateway received."""
+
+    path: str
+    headers: dict[str, str]
 
 
-def _log_export_headers() -> dict[str, str]:
-    """Same, for the OTLP log exporter behind the logger provider."""
-    provider = _get_logger_provider()
-    assert provider is not None
-    for processor in provider._multi_log_record_processor._log_record_processors:
-        # The batch processor moved behind `_batch_processor` in newer OTel SDKs;
-        # accept either shape rather than pinning one version's internals.
-        batch = getattr(processor, "_batch_processor", processor)
-        headers = getattr(getattr(batch, "_exporter", None), "_headers", None)
-        if headers:
-            return dict(headers)
-    return {}
+@pytest.fixture
+def wire(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[_Capture]]:
+    """A throwaway local OTLP/HTTP receiver; yields the requests it saw.
+
+    Asserting on what actually crosses the wire keeps these tests independent
+    of OpenTelemetry's private exporter attributes, which change between
+    releases (`_headers` is gone in 1.45).
+    """
+    seen: list[_Capture] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802 — http.server's naming
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            seen.append(
+                _Capture(self.path, {k.lower(): v for k, v in self.headers.items()})
+            )
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv(ENV_ENDPOINT, f"http://127.0.0.1:{server.server_address[1]}")
+    # conftest shrinks the export timeout for unreachable endpoints; a live
+    # local server needs a realistic one or a slow CI runner times out.
+    monkeypatch.setattr(TIMEOUT_ATTR, PRODUCTION_EXPORT_TIMEOUT_SECONDS)
+    try:
+        yield seen
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
-def _metric_export_headers() -> dict[str, str]:
-    """Same, for the OTLP metric exporter behind the periodic reader."""
-    provider = _get_meter_provider()
-    assert provider is not None
-    for reader in provider._metric_readers:
-        headers = getattr(getattr(reader, "_exporter", None), "_headers", None)
-        if headers:
-            return dict(headers)
-    return {}
+def _emit_and_flush_all_signals() -> None:
+    """One span, one log record and one metric point, then flush all three."""
+    tracer_provider = _get_provider()
+    logger_provider = _get_logger_provider()
+    meter_provider = _get_meter_provider()
+    assert tracer_provider is not None
+    assert logger_provider is not None
+    assert meter_provider is not None
+
+    with tracer_provider.get_tracer("indratrace.tests").start_as_current_span("s"):
+        pass
+    # WARNING passes the stdlib root default, so no log_level is needed.
+    logging.getLogger("tests.wire").warning("wire test record")
+    meter_provider.get_meter("indratrace.tests").create_counter("wire").add(1)
+
+    tracer_provider.force_flush()
+    logger_provider.force_flush()
+    meter_provider.force_flush()
+
+
+def _keys_by_path(seen: list[_Capture]) -> dict[str, set[str | None]]:
+    """Every `x-indratrace-key` value the receiver saw, per OTLP path."""
+    by_path: dict[str, set[str | None]] = {}
+    for capture in seen:
+        by_path.setdefault(capture.path, set()).add(capture.headers.get(API_KEY_HEADER))
+    return by_path
+
+
+ALL_SIGNAL_PATHS = {"/v1/traces", "/v1/logs", "/v1/metrics"}
 
 
 class TestAuthHeaderOnEveryExporter:
@@ -331,13 +379,14 @@ class TestAuthHeaderOnEveryExporter:
     metrics-only regression would be invisible until a dashboard was empty.
     """
 
-    def test_all_three_exporters_carry_the_key(self) -> None:
+    def test_all_three_exporters_carry_the_key(self, wire: list[_Capture]) -> None:
         init_observability(api_key="it_test_secret", instrument_fastapi=False)
+        _emit_and_flush_all_signals()
 
-        expected = {API_KEY_HEADER: "it_test_secret"}
-        assert _provider_export_headers() == expected, "traces"
-        assert _log_export_headers() == expected, "logs"
-        assert _metric_export_headers() == expected, "logs and metrics"
+        # Every request, on every signal, carried exactly this key.
+        assert _keys_by_path(wire) == dict.fromkeys(
+            ALL_SIGNAL_PATHS, {"it_test_secret"}
+        )
 
 
 class TestReadmeOneLiner:
