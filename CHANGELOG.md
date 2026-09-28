@@ -35,6 +35,12 @@ hostname is a fix, not a break.)
   `127.0.0.0/8` and `::1` do not warn.
 - **`ObsConfig.api_key` is excluded from `repr()`**, so a printed or logged
   config never contains the key.
+- **The API key is redacted from transport-error text.** If a key contains a
+  stray newline (a copy-paste accident), `requests` quotes the whole header
+  value in its `InvalidHeader` error. That text reached OpenTelemetry's own
+  OTLP exporter log in 1.0.0, and in this release's startup preflight
+  diagnosis and `debug=True` export-failure line. All three now show
+  `[REDACTED]` in place of the key.
 - Repository and release hardening, with no change to the package's behaviour:
   CI and release workflows run with read-only default token permissions, every
   GitHub Action is pinned to a commit SHA, a `pip-audit` job checks
