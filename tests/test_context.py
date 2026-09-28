@@ -18,8 +18,8 @@ import asyncio
 from collections.abc import Iterator
 
 import pytest
-from opentelemetry.sdk.trace import ReadableSpan
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from indratrace import (
@@ -38,6 +38,7 @@ from indratrace.context import (
     SESSION_ID_KEY,
     SPAN_KIND_ATTRIBUTE,
     USER_ID_KEY,
+    SessionSpanProcessor,
 )
 from indratrace.init import _get_provider, _reset_for_tests
 
@@ -404,3 +405,24 @@ class TestSessionSurvivesBrokenBaggage:
         # The span still lands; it just carries no ids.
         span = by_name(spans, "still-emitted")
         assert SESSION_ID_KEY not in span.attributes
+
+
+class TestSessionSpanProcessorFlush:
+    def test_force_flush_reports_success(self) -> None:
+        """On OpenTelemetry <=1.29 the inherited `force_flush` returned None, and
+        `TracerProvider.force_flush` stops at the first falsy processor, so the
+        batch exporter registered after this one was never flushed."""
+        assert SessionSpanProcessor().force_flush() is True
+
+    def test_provider_force_flush_reaches_the_exporter(self) -> None:
+        provider = TracerProvider()
+        provider.add_span_processor(SessionSpanProcessor())
+        exporter = InMemorySpanExporter()
+        # Batched, like the real wiring: only a flush delivers the span.
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+        with provider.get_tracer("t").start_as_current_span("flushed"):
+            pass
+
+        assert provider.force_flush() is True
+        assert [span.name for span in exporter.get_finished_spans()] == ["flushed"]
+        provider.shutdown()

@@ -67,14 +67,23 @@ class SessionSpanProcessor(SpanProcessor):
     the attributes appear uniformly without any per-span code.
 
     Subclasses the SDK's `SpanProcessor` base so it inherits no-op defaults for
-    the hooks it doesn't need (`on_end`, `shutdown`, `force_flush`, and internal
-    ones like `_on_ending` that newer SDK versions call). We override only
-    `on_start`.
+    the hooks it doesn't need (`on_end`, `shutdown`, and internal ones like
+    `_on_ending` that newer SDK versions call). It overrides `on_start`, and
+    `force_flush` (see there).
     """
 
-    def on_start(
-        self, span: Span, parent_context: Context | None = None
-    ) -> None:
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        """Nothing buffered here, so the flush always succeeds.
+
+        Overridden because the base class returns `None` on older OpenTelemetry
+        (1.29 and earlier). `TracerProvider.force_flush` stops at the first
+        processor that returns a falsy value, and this processor is registered
+        before the batch exporter, so the inherited `None` meant a host app's
+        `force_flush()` never exported our spans.
+        """
+        return True
+
+    def on_start(self, span: Span, parent_context: Context | None = None) -> None:
         try:
             session_id = baggage.get_baggage(SESSION_ID_KEY, parent_context)
             if session_id is not None:
@@ -89,9 +98,7 @@ class SessionSpanProcessor(SpanProcessor):
             )
 
 
-def _apply_session_baggage(
-    session_id: str | None, user_id: str | None
-) -> object:
+def _apply_session_baggage(session_id: str | None, user_id: str | None) -> object:
     """Attach a new OTel context carrying the ids as baggage; return its token.
 
     Each `set_baggage` returns a *new* context layered over the current one, so
@@ -150,9 +157,7 @@ class _SessionScope:
         self.detach()
 
 
-def session(
-    session_id: str | None = None, user_id: str | None = None
-) -> _SessionScope:
+def session(session_id: str | None = None, user_id: str | None = None) -> _SessionScope:
     """Tag every span started in this scope with `session.id` / `user.id`.
 
     Two forms, one call:

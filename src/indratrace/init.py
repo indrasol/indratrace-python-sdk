@@ -179,6 +179,32 @@ def _export_failure_hint(status: int | None) -> str:
     return f" — HTTP {status}: the gateway was reached and refused the batch."
 
 
+def _scrub_exception(exc: BaseException, api_key: str | None) -> None:
+    """Redact the API key from `exc` and its chain, in place, before anything
+    formats it.
+
+    A key with a stray newline makes `requests` raise `InvalidHeader` quoting
+    the header value. On OpenTelemetry <=1.29 that exception escapes the
+    exporter and the batch processor logs it, with a traceback, under its own
+    logger, which a logging filter on the exporter loggers cannot reach.
+    Rewriting the exception's `args` fixes every later `str(exc)` and traceback.
+    """
+    if not api_key:
+        return
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        try:
+            current.args = tuple(
+                redact_api_key(arg, api_key) if isinstance(arg, str) else arg
+                for arg in current.args
+            )
+        except Exception:  # noqa: BLE001 — scrubbing must never break an export
+            pass
+        current = current.__cause__ or current.__context__
+
+
 def _observe_export(
     exporter: Any,
     signal: str,
@@ -223,6 +249,7 @@ def _observe_export(
             try:
                 response = real_low_level(*args, **kwargs)
             except BaseException as exc:
+                _scrub_exception(exc, api_key)
                 seen_exc[0] = exc
                 raise
             seen_response[0] = response
@@ -239,6 +266,7 @@ def _observe_export(
         try:
             result = real_export(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001 — narrate, never change behavior
+            _scrub_exception(exc, api_key)
             if audible:
                 reason = str(exc)
                 redacted = redact_api_key(reason, api_key) if api_key else reason

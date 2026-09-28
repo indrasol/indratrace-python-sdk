@@ -664,20 +664,24 @@ class TestKeyRedaction:
 
         assert SECRET_KEY not in str(excinfo.value)
 
-    def test_otel_exporter_failure_log_redacts_the_key(self) -> None:
+    def test_otel_failure_logs_redact_the_key(self) -> None:
+        """Every OpenTelemetry record about the failed export, traceback
+        included, is free of the key. Captured at the root logger because the
+        logger varies by version: the exporter's own on 1.45, the batch
+        processor's (with a traceback) on older releases."""
         from indratrace.init import _get_provider
 
-        records: list[logging.LogRecord] = []
+        formatter = logging.Formatter("%(name)s %(message)s")
+        rendered: list[str] = []
 
         class Collect(logging.Handler):
             def emit(self, record: logging.LogRecord) -> None:
-                records.append(record)
+                if record.name.startswith("opentelemetry"):
+                    rendered.append(formatter.format(record))
 
-        otel_logger = logging.getLogger(
-            "opentelemetry.exporter.otlp.proto.http.trace_exporter"
-        )
+        root = logging.getLogger()
         handler = Collect(level=logging.DEBUG)
-        otel_logger.addHandler(handler)
+        root.addHandler(handler)
         try:
             init_observability(
                 api_key=self.MALFORMED_KEY, instrument_http=False, debug=True
@@ -688,8 +692,7 @@ class TestKeyRedaction:
                 pass
             provider.force_flush()
         finally:
-            otel_logger.removeHandler(handler)
+            root.removeHandler(handler)
 
-        messages = [record.getMessage() for record in records]
-        assert any("[REDACTED]" in message for message in messages), messages
-        assert not any(SECRET_KEY in message for message in messages)
+        assert any("[REDACTED]" in text for text in rendered), rendered
+        assert not any(SECRET_KEY in text for text in rendered)
