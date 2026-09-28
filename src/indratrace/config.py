@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import warnings
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
@@ -210,6 +211,11 @@ class ObsConfig:
     export_timeout_seconds: float = DEFAULT_EXPORT_TIMEOUT_SECONDS
 
     @property
+    def display_endpoint(self) -> str:
+        """`endpoint` with URL credentials hidden: the only form to log or show."""
+        return redact_url_credentials(self.endpoint)
+
+    @property
     def traces_endpoint(self) -> str:
         """OTLP/HTTP traces URL. `endpoint` is the base, per conventions.md."""
         return f"{self.endpoint.rstrip('/')}/v1/traces"
@@ -297,6 +303,21 @@ def resolve_config(
         # suite can shrink it and not pay a real export backoff per teardown.
         export_timeout_seconds=DEFAULT_EXPORT_TIMEOUT_SECONDS,
     )
+
+
+#: `scheme://userinfo@` — credentials embedded in a URL.
+_URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@")
+
+
+def redact_url_credentials(text: str) -> str:
+    """`text` with any `user:pass@` in a URL replaced by `***@`.
+
+    `INDRATRACE_ENDPOINT=https://user:pass@host` works (requests sends the
+    credentials as basic auth), so the endpoint must never be shown as-is.
+    Works on free text, not just a bare URL, because exception messages and
+    diagnoses embed the endpoint in prose.
+    """
+    return _URL_USERINFO.sub(r"\1***@", text)
 
 
 def redact_api_key(text: str, api_key: str) -> str:

@@ -26,6 +26,7 @@ from indratrace.config import (
     ObsConfig,
     build_resource,
     plaintext_endpoint_warning,
+    redact_url_credentials,
     resolve_config,
     warn_about_removed_env_vars,
 )
@@ -373,3 +374,32 @@ class TestPlaintextEndpointWarning:
     )
     def test_https_and_loopback_do_not_warn(self, endpoint: str) -> None:
         assert plaintext_endpoint_warning(endpoint) is None
+
+
+class TestUrlCredentials:
+    @pytest.mark.parametrize(
+        ("raw", "shown"),
+        [
+            ("https://user:pass@host.example", "https://***@host.example"),
+            ("https://token@host.example:4318/x", "https://***@host.example:4318/x"),
+            (
+                "failed to reach http://u:p@10.0.0.5:4318/v1/traces (refused)",
+                "failed to reach http://***@10.0.0.5:4318/v1/traces (refused)",
+            ),
+            ("https://host.example", "https://host.example"),
+            ("mail me at a@b.example", "mail me at a@b.example"),
+        ],
+    )
+    def test_redact_url_credentials(self, raw: str, shown: str) -> None:
+        assert redact_url_credentials(raw) == shown
+
+    def test_display_endpoint_hides_credentials_but_transport_keeps_them(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(ENV_ENDPOINT, "https://user:s3cret@gw.example")
+        cfg = resolve_config(api_key=TEST_API_KEY)
+
+        assert cfg.display_endpoint == "https://***@gw.example"
+        assert "s3cret" not in repr(cfg.display_endpoint)
+        # Transport still needs them: requests sends them as basic auth.
+        assert cfg.traces_endpoint == "https://user:s3cret@gw.example/v1/traces"

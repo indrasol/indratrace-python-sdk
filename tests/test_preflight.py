@@ -704,3 +704,49 @@ class TestKeyRedaction:
 
         assert any("[REDACTED]" in text for text in rendered), rendered
         assert not any(SECRET_KEY in text for text in rendered)
+
+
+class TestUrlCredentialsNeverShown:
+    ENDPOINT = "https://user:s3cret@gw.example.test"
+
+    def _cfg(self) -> ObsConfig:
+        return ObsConfig(
+            api_key=SECRET_KEY,
+            endpoint=self.ENDPOINT,
+            endpoint_source=ENDPOINT_SOURCE_ENV,
+        )
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided"),
+            ConnectionRefusedError(errno.ECONNREFUSED, "refused"),
+            requests.exceptions.ConnectTimeout("connect timed out"),
+            requests.exceptions.ReadTimeout("read timed out"),
+            ssl.SSLCertVerificationError("certificate verify failed"),
+            RuntimeError(f"boom while posting to {ENDPOINT}/v1/traces"),
+        ],
+    )
+    def test_exception_diagnoses(self, exc: BaseException) -> None:
+        message = diagnose_exception(exc, self._cfg()).message
+        assert "s3cret" not in message
+        assert "user:" not in message
+
+    @pytest.mark.parametrize("status", [401, 402, 404, 429, 500, 502, 503])
+    def test_response_diagnoses(self, status: int) -> None:
+        message = diagnose_response(problem(status, "t", "d"), self._cfg()).message
+        assert "s3cret" not in message
+
+    def test_the_debug_banner_and_init_logs(
+        self, monkeypatch: pytest.MonkeyPatch, sdk_log: list[logging.LogRecord]
+    ) -> None:
+        _reset_for_tests()
+        monkeypatch.setenv("INDRATRACE_ENDPOINT", "http://user:s3cret@127.0.0.1:1")
+        try:
+            init_observability(api_key=SECRET_KEY, instrument_http=False, debug=True)
+        finally:
+            _reset_for_tests()
+
+        messages = [record.getMessage() for record in sdk_log]
+        assert any("http://***@127.0.0.1:1" in message for message in messages)
+        assert not any("s3cret" in message for message in messages)

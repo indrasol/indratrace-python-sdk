@@ -50,6 +50,7 @@ from .config import (
     PREFLIGHT_TIMEOUT_SECONDS,
     ObsConfig,
     redact_api_key,
+    redact_url_credentials,
 )
 from .version import __version__
 
@@ -117,6 +118,11 @@ class Diagnosis:
     cause: str
     message: str
     status: int | None = None
+
+    def __post_init__(self) -> None:
+        # Every diagnosis is logged or raised, and many embed the endpoint, so
+        # URL credentials are stripped here, once, whatever built the message.
+        object.__setattr__(self, "message", redact_url_credentials(self.message))
 
     @property
     def ok(self) -> bool:

@@ -36,6 +36,7 @@ from .config import (
     build_resource,
     plaintext_endpoint_warning,
     redact_api_key,
+    redact_url_credentials,
     resolve_capture_content,
     resolve_config,
     resolve_debug,
@@ -113,7 +114,8 @@ _OTLP_EXPORTER_LOGGERS = (
 
 
 class _RedactApiKey(logging.Filter):
-    """Replace the API key in a record's message with `[REDACTED]`."""
+    """Replace the API key in a record's message with `[REDACTED]`, and any
+    URL credentials with `***`."""
 
     def __init__(self, api_key: str) -> None:
         super().__init__()
@@ -124,7 +126,7 @@ class _RedactApiKey(logging.Filter):
             message = record.getMessage()
         except Exception:  # noqa: BLE001 — a malformed record is not ours to fix
             return True
-        redacted = redact_api_key(message, self._api_key)
+        redacted = _redact_secrets(message, self._api_key)
         if redacted != message:
             record.msg, record.args = redacted, None
         return True
@@ -179,9 +181,16 @@ def _export_failure_hint(status: int | None) -> str:
     return f" — HTTP {status}: the gateway was reached and refused the batch."
 
 
+def _redact_secrets(text: str, api_key: str | None) -> str:
+    """The API key and any URL credentials, removed from `text`."""
+    if api_key:
+        text = redact_api_key(text, api_key)
+    return redact_url_credentials(text)
+
+
 def _scrub_exception(exc: BaseException, api_key: str | None) -> None:
-    """Redact the API key from `exc` and its chain, in place, before anything
-    formats it.
+    """Redact the API key and URL credentials from `exc` and its chain, in
+    place, before anything formats it.
 
     A key with a stray newline makes `requests` raise `InvalidHeader` quoting
     the header value. On OpenTelemetry <=1.29 that exception escapes the
@@ -189,15 +198,13 @@ def _scrub_exception(exc: BaseException, api_key: str | None) -> None:
     logger, which a logging filter on the exporter loggers cannot reach.
     Rewriting the exception's `args` fixes every later `str(exc)` and traceback.
     """
-    if not api_key:
-        return
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         try:
             current.args = tuple(
-                redact_api_key(arg, api_key) if isinstance(arg, str) else arg
+                _redact_secrets(arg, api_key) if isinstance(arg, str) else arg
                 for arg in current.args
             )
         except Exception:  # noqa: BLE001 — scrubbing must never break an export
@@ -269,7 +276,7 @@ def _observe_export(
             _scrub_exception(exc, api_key)
             if audible:
                 reason = str(exc)
-                redacted = redact_api_key(reason, api_key) if api_key else reason
+                redacted = _redact_secrets(reason, api_key)
                 # The traceback would repeat the key, so drop it when redacting.
                 logger.warning(
                     "indratrace: %s export FAILED: %s",
@@ -514,7 +521,8 @@ def _banner_lines(
     lines = [
         f"{_PRODUCT_NAME} SDK v{__version__} initialized",
         f"  service={_service_name(resource)} version={cfg.service_version}",
-        f"  endpoint={cfg.endpoint} (traces={cfg.traces_endpoint})",
+        f"  endpoint={cfg.display_endpoint} "
+        f"(traces={redact_url_credentials(cfg.traces_endpoint)})",
         f"  api_key=set capture_content={'on' if capture_content else 'off'}",
         "  identity: product, deployment.environment and tenant.id are stamped "
         "by IndraTrace from your API key",
@@ -583,7 +591,9 @@ def _preflight(cfg: ObsConfig) -> Diagnosis | None:
         logger.debug("indratrace: startup preflight crashed", exc_info=True)
         return None
     if diagnosis.ok:
-        logger.debug("indratrace: startup preflight ok (endpoint=%s)", cfg.endpoint)
+        logger.debug(
+            "indratrace: startup preflight ok (endpoint=%s)", cfg.display_endpoint
+        )
         return diagnosis
     if mode == PREFLIGHT_STRICT:
         raise IndraTraceConfigError(diagnosis.message)
@@ -893,7 +903,7 @@ def init_observability(
         logger.info(
             "indratrace initialized: service=%s endpoint=%s",
             _service_name(resource),
-            cfg.endpoint,
+            cfg.display_endpoint,
         )
         if debug_on:
             for line in _banner_lines(
