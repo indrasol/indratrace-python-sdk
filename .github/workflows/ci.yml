@@ -54,6 +54,26 @@ jobs:
       # harness (its own job below). This job is the pure-offline suite.
       - run: pytest -m "not integration and not genai" -q
 
+  unit-floor:
+    name: unit (py3.10, OpenTelemetry floor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.10"
+      - run: python -m pip install --upgrade pip
+      # The oldest OpenTelemetry pyproject.toml allows, forced, so the declared
+      # floor is tested rather than assumed. Keep in step with pyproject.toml.
+      - run: >-
+          pip install -e ".[dev,fastapi,django,flask,anthropic,openai,gemini,bedrock,claude-agent-sdk]"
+          "opentelemetry-sdk==1.41.*"
+          "opentelemetry-exporter-otlp-proto-http==1.41.*"
+      - run: pip list | grep -E "^opentelemetry-(api|sdk|exporter-otlp-proto-http) "
+      - run: pytest -m "not integration and not genai" -q
+
   audit:
     name: audit (pip-audit)
     runs-on: ubuntu-latest

@@ -99,9 +99,25 @@ hostname is a fix, not a break.)
 - The `debug=True` export narration is now built on the same always-on observer
   the failure surfacing uses; its lines are unchanged.
 
+- **The OpenTelemetry floor is now 1.41** (`opentelemetry-sdk` and
+  `opentelemetry-exporter-otlp-proto-http`, previously `>=1.20`). 1.20 was
+  never tested, and with every extra installed it cannot even be resolved.
+  CI now has a job that forces the floor and runs the full offline suite:
+  1.41 passes and 1.40 does not. If your app pins an older OpenTelemetry,
+  stay on 1.0.x until you can upgrade it.
+
 - Package metadata uses PEP 639: `license = "Apache-2.0"` (an SPDX expression)
   with `license-files`, and the build needs `setuptools>=77`. The redundant
   `License ::` classifier is gone. The license itself is unchanged.
+
+### Fixed
+
+- A host app's `TracerProvider.force_flush()` now exports IndraTrace's spans on
+  older OpenTelemetry. The session processor inherited a `force_flush` that
+  returned `None`, and the provider stops at the first processor that does not
+  report success, so the batch exporter behind it was never flushed. This
+  mattered most to serverless functions and short-lived jobs that flush before
+  exiting.
 
 ### Decided: there is still no `init_observability(endpoint=...)`
 

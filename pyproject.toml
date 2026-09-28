@@ -26,8 +26,10 @@ classifiers = [
 ]
 # OTel only (ADR 0003). Provider instrumentation ships as optional extras.
 dependencies = [
-    "opentelemetry-sdk>=1.20",
-    "opentelemetry-exporter-otlp-proto-http>=1.20",
+    # The floor is what CI's unit-floor job proves: the full offline suite
+    # passes at 1.41 with every extra installed, and fails at 1.40.
+    "opentelemetry-sdk>=1.41",
+    "opentelemetry-exporter-otlp-proto-http>=1.41",
 ]
 
 [project.optional-dependencies]
