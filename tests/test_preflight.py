@@ -631,3 +631,65 @@ class TestObserveExportFeedsHealth:
 
         with pytest.raises(FrozenInstanceError):
             d.cause = DNS  # type: ignore[misc]
+
+
+class TestKeyRedaction:
+    """`requests` quotes the header value back when the key has a newline in it
+    (a copy-paste accident). That text must never reach a log or an exception."""
+
+    MALFORMED_KEY = SECRET_KEY + "\n"
+
+    @pytest.fixture(autouse=True)
+    def _reset(self) -> Any:
+        _reset_for_tests()
+        yield
+        _reset_for_tests()
+
+    def test_preflight_diagnosis_redacts_the_key(self) -> None:
+        malformed = ObsConfig(api_key=self.MALFORMED_KEY, endpoint=CLOUD)
+
+        diagnosis = run_preflight(malformed)  # raises InvalidHeader pre-network
+
+        assert "InvalidHeader" in diagnosis.message
+        assert SECRET_KEY not in diagnosis.message
+        assert "[REDACTED]" in diagnosis.message
+
+    def test_strict_mode_error_redacts_the_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(ENV_PREFLIGHT, "strict")
+
+        with pytest.raises(IndraTraceConfigError) as excinfo:
+            init_observability(api_key=self.MALFORMED_KEY, instrument_http=False)
+
+        assert SECRET_KEY not in str(excinfo.value)
+
+    def test_otel_exporter_failure_log_redacts_the_key(self) -> None:
+        from indratrace.init import _get_provider
+
+        records: list[logging.LogRecord] = []
+
+        class Collect(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        otel_logger = logging.getLogger(
+            "opentelemetry.exporter.otlp.proto.http.trace_exporter"
+        )
+        handler = Collect(level=logging.DEBUG)
+        otel_logger.addHandler(handler)
+        try:
+            init_observability(
+                api_key=self.MALFORMED_KEY, instrument_http=False, debug=True
+            )
+            provider = _get_provider()
+            assert provider is not None
+            with provider.get_tracer("t").start_as_current_span("s"):
+                pass
+            provider.force_flush()
+        finally:
+            otel_logger.removeHandler(handler)
+
+        messages = [record.getMessage() for record in records]
+        assert any("[REDACTED]" in message for message in messages), messages
+        assert not any(SECRET_KEY in message for message in messages)

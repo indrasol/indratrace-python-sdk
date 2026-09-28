@@ -38,7 +38,7 @@ import socket
 import ssl
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -49,6 +49,7 @@ from .config import (
     PREFLIGHT_READ_TIMEOUT_SECONDS,
     PREFLIGHT_TIMEOUT_SECONDS,
     ObsConfig,
+    redact_api_key,
 )
 from .version import __version__
 
@@ -468,8 +469,9 @@ def diagnose_response(response: Any, cfg: ObsConfig) -> Diagnosis:
 
 
 def diagnose_exception(exc: BaseException, cfg: ObsConfig) -> Diagnosis:
-    """Diagnosis for a transport exception."""
-    return _classify_exception(exc, cfg)
+    """Diagnosis for a transport exception, with the key redacted from it."""
+    diagnosis = _classify_exception(exc, cfg)
+    return replace(diagnosis, message=redact_api_key(diagnosis.message, cfg.api_key))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -35,6 +35,7 @@ from .config import (
     ObsConfig,
     build_resource,
     plaintext_endpoint_warning,
+    redact_api_key,
     resolve_capture_content,
     resolve_config,
     resolve_debug,
@@ -100,6 +101,46 @@ class _ExcludeIndraTrace(logging.Filter):
         return root not in _EXPORT_EXCLUDED_LOGGERS
 
 
+#: OpenTelemetry's OTLP/HTTP exporter loggers. They log a failed export's
+#: reason verbatim, and `requests` puts the header value in that reason when
+#: the key contains a newline. A filter only runs on the logger that creates the
+#: record, so it goes on each of these rather than on a parent.
+_OTLP_EXPORTER_LOGGERS = (
+    "opentelemetry.exporter.otlp.proto.http.trace_exporter",
+    "opentelemetry.exporter.otlp.proto.http._log_exporter",
+    "opentelemetry.exporter.otlp.proto.http.metric_exporter",
+)
+
+
+class _RedactApiKey(logging.Filter):
+    """Replace the API key in a record's message with `[REDACTED]`."""
+
+    def __init__(self, api_key: str) -> None:
+        super().__init__()
+        self._api_key = api_key
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 — a malformed record is not ours to fix
+            return True
+        redacted = redact_api_key(message, self._api_key)
+        if redacted != message:
+            record.msg, record.args = redacted, None
+        return True
+
+
+#: The `_RedactApiKey` filter init attached, so `_reset_for_tests` can remove it.
+_redact_filter: _RedactApiKey | None = None
+
+
+def _attach_key_redaction(api_key: str) -> _RedactApiKey:
+    redact = _RedactApiKey(api_key)
+    for name in _OTLP_EXPORTER_LOGGERS:
+        logging.getLogger(name).addFilter(redact)
+    return redact
+
+
 def _shutdown_quietly(providers: Iterable[_Shutdownable | None]) -> None:
     """Best-effort teardown. Used on the partial-init path and by tests.
 
@@ -144,6 +185,7 @@ def _observe_export(
     health: ExportHealth | None = None,
     *,
     audible: bool = False,
+    api_key: str | None = None,
 ) -> Any:
     """Wrap an OTLP exporter's `export()` so each attempt reports its outcome.
 
@@ -198,8 +240,14 @@ def _observe_export(
             result = real_export(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001 — narrate, never change behavior
             if audible:
+                reason = str(exc)
+                redacted = redact_api_key(reason, api_key) if api_key else reason
+                # The traceback would repeat the key, so drop it when redacting.
                 logger.warning(
-                    "indratrace: %s export FAILED: %s", signal, exc, exc_info=True
+                    "indratrace: %s export FAILED: %s",
+                    signal,
+                    redacted,
+                    exc_info=redacted == reason,
                 )
             if health is not None:
                 health.record_failure(signal, exc=exc)
@@ -253,7 +301,7 @@ def _build_tracer_provider(
         headers=cfg.headers,
         timeout=cfg.export_timeout_seconds,
     )
-    _observe_export(exporter, "traces", health, audible=debug)
+    _observe_export(exporter, "traces", health, audible=debug, api_key=cfg.api_key)
     # Batched + async: a dead collector drops spans, it never blocks a request
     # or raises into the caller.
     provider.add_span_processor(BatchSpanProcessor(exporter))
@@ -273,7 +321,7 @@ def _build_logger_provider(
         headers=cfg.headers,
         timeout=cfg.export_timeout_seconds,
     )
-    _observe_export(exporter, "logs", health, audible=debug)
+    _observe_export(exporter, "logs", health, audible=debug, api_key=cfg.api_key)
     provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
     return provider
 
@@ -295,7 +343,7 @@ def _build_meter_provider(
         headers=cfg.headers,
         timeout=cfg.export_timeout_seconds,
     )
-    _observe_export(exporter, "metrics", health, audible=debug)
+    _observe_export(exporter, "metrics", health, audible=debug, api_key=cfg.api_key)
     reader = PeriodicExportingMetricReader(
         exporter,
         # Bound each periodic export. Note this does *not* bound `shutdown()`,
@@ -658,7 +706,7 @@ def init_observability(
     """
     global _initialized, _provider, _logger_provider, _meter_provider
     global _log_handler, _root_level_before
-    global _debug_handler, _debug_level_before
+    global _debug_handler, _debug_level_before, _redact_filter
 
     # Before the idempotency guard: a call that names a removed parameter is
     # wrong on the second call too, and the migration message is the point.
@@ -702,6 +750,9 @@ def init_observability(
     # come back 2xx. Before the providers exist so that `strict` mode raises
     # with nothing built and nothing to unwind. Non-fatal by default.
     _preflight(cfg)
+
+    # Before any exporter exists, so none of their failure logs can carry the key.
+    _redact_filter = _attach_key_redaction(cfg.api_key)
 
     # From here on, fail-silent (ADR 0003). Track what got built so a failure
     # part-way through doesn't strand background exporter threads owned by
@@ -869,7 +920,7 @@ def _reset_for_tests() -> None:
     """Tear down module state so a test can init again. Not public API."""
     global _initialized, _provider, _logger_provider, _meter_provider
     global _log_handler, _root_level_before
-    global _debug_handler, _debug_level_before
+    global _debug_handler, _debug_level_before, _redact_filter
 
     root = logging.getLogger()
     if _log_handler is not None:
@@ -893,6 +944,10 @@ def _reset_for_tests() -> None:
 
     _shutdown_quietly((_provider, _logger_provider, _meter_provider))
 
+    if _redact_filter is not None:
+        for name in _OTLP_EXPORTER_LOGGERS:
+            logging.getLogger(name).removeFilter(_redact_filter)
+
     _uninstrument_http()
     _uninstrument_genai()
     _disable_agent_sdk_instrumentation()
@@ -905,3 +960,4 @@ def _reset_for_tests() -> None:
     _root_level_before = None
     _debug_handler = None
     _debug_level_before = None
+    _redact_filter = None

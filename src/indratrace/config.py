@@ -299,6 +299,20 @@ def resolve_config(
     )
 
 
+def redact_api_key(text: str, api_key: str) -> str:
+    """`text` with every occurrence of the key replaced by `[REDACTED]`.
+
+    Needed because some transport errors quote the header value back: a key
+    with a stray newline makes `requests` raise `InvalidHeader` whose message
+    contains the whole key. Also redacts the whitespace-stripped key and its
+    `repr()` body, the two other forms such a message prints it in.
+    """
+    for form in {api_key, api_key.strip(), repr(api_key)[1:-1]}:
+        if form:
+            text = text.replace(form, "[REDACTED]")
+    return text
+
+
 def _is_loopback_host(host: str) -> bool:
     """`localhost`, `127.0.0.0/8` or `::1` — traffic that never leaves the box."""
     if host.lower() == "localhost":
