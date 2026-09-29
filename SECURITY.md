@@ -27,10 +27,22 @@ if you prefer.
   fix ships.
 - With your permission, we're happy to credit you in the release notes.
 
+## Response times
+
+| Step | Target |
+|---|---|
+| Acknowledge your report | within 3 business days |
+| Triage decision (accepted, needs more info, or declined, with reasons) | within 7 days |
+| Fix or mitigation for **critical** and **high** severity issues | within 30 days |
+
+Lower-severity issues are fixed in a regular release. We'll tell you if we
+expect to miss a target, and why.
+
 ## Supported versions
 
-Security fixes are released against the latest published version on PyPI. Since
-PyPI versions are immutable, a fix always ships as a new version — please upgrade
-to receive it.
+Only the **latest minor release** receives security fixes (for example, while
+1.1.x is current, fixes ship as 1.1.x and not for 1.0.x). Since PyPI versions
+are immutable, a fix always ships as a new version — please upgrade to receive
+it.
 
 Thank you for helping keep IndraTrace and its users safe.

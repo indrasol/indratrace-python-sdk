@@ -36,11 +36,16 @@ Re-run with diagnostics on and paste the console output — this is usually the
 fastest way for us to see what went wrong:
 
 ```python
-init_observability(product="...", debug=True)   # or set INDRATRACE_DEBUG=1
+init_observability(api_key="...", debug=True)
 ```
 
+Or leave the code as it is and set `INDRATRACE_DEBUG=1` in the environment.
+
+**Redact your API key** before pasting. Replace any `it_live_...` or `it_test_...`
+value with `[REDACTED]`.
+
 ```
-<!-- paste the banner + any export-failure / skipped lines here -->
+<!-- paste the INDRATRACE_DEBUG=1 output here: banner + any export-failure / skipped lines -->
 ```
 
 ## Anything else

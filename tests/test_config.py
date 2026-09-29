@@ -8,11 +8,14 @@ gateway stamps from the key are gone from the wire.
 from __future__ import annotations
 
 import pytest
+from opentelemetry.sdk.resources import Resource
 
 from indratrace.config import (
     API_KEY_HEADER,
     DEFAULT_ENDPOINT,
     DEFAULT_SERVICE_VERSION,
+    ENDPOINT_SOURCE_DEFAULT,
+    ENDPOINT_SOURCE_ENV,
     ENV_API_KEY,
     ENV_ENDPOINT,
     ENV_ENV,
@@ -22,6 +25,8 @@ from indratrace.config import (
     IndraTraceConfigError,
     ObsConfig,
     build_resource,
+    plaintext_endpoint_warning,
+    redact_url_credentials,
     resolve_config,
     warn_about_removed_env_vars,
 )
@@ -55,10 +60,44 @@ class TestDefaults:
         assert cfg.service_name is None
         assert cfg.service_version == DEFAULT_SERVICE_VERSION
 
-    def test_default_endpoint_is_the_ingest_gateway(self) -> None:
-        """The pre-gateway collector port (:4318) no longer terminates SDK
-        traffic; :8088 is the dev gateway that authenticates the key."""
-        assert DEFAULT_ENDPOINT == "http://localhost:8088"
+    def test_default_endpoint_is_the_production_ingest_gateway(self) -> None:
+        """Since 1.1 the default is the PRODUCTION ingest hostname, over HTTPS.
+
+        Not a development gateway: the package is public, and a development
+        default would route a stranger's telemetry somewhere with no production
+        guarantees. Not localhost: that was a 1.0
+        placeholder, and a placeholder default is what made every caller set
+        `INDRATRACE_ENDPOINT` by hand.
+        """
+        assert DEFAULT_ENDPOINT == "https://ingest.indratrace.com"
+
+    def test_with_only_the_api_key_set_the_endpoint_is_production(
+        self, no_endpoint_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The customer contract: `INDRATRACE_API_KEY` alone is a complete
+        configuration, and it lands on the production gateway."""
+        monkeypatch.setenv(ENV_API_KEY, TEST_API_KEY)
+        cfg = resolve_config()
+        assert cfg.endpoint == "https://ingest.indratrace.com"
+        assert cfg.endpoint_source == ENDPOINT_SOURCE_DEFAULT
+
+    def test_localhost_8088_is_no_longer_a_default_anywhere(self) -> None:
+        """The 1.0 placeholder must not survive in any source file as a default
+        value — only in prose that says it is gone."""
+        import re
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parents[1] / "src" / "indratrace"
+        offenders = []
+        for path in src.rglob("*.py"):
+            code = "\n".join(
+                line.split("#", 1)[0] for line in path.read_text().splitlines()
+            )
+            # Strip docstrings crudely: triple-quoted blocks.
+            code = re.sub(r'"""[\s\S]*?"""', "", code)
+            if "localhost:8088" in code:
+                offenders.append(path.name)
+        assert not offenders, f"localhost:8088 is still a value in {offenders}"
 
     def test_missing_api_key_raises_actionably(self) -> None:
         with pytest.raises(IndraTraceConfigError) as excinfo:
@@ -187,15 +226,23 @@ class TestTransport:
         the silent-401 failure mode is gone by construction."""
         assert resolve_config(api_key=TEST_API_KEY).headers
 
-    def test_endpoint_env_var_still_overrides(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`INDRATRACE_ENDPOINT` survives as an IndraTrace-developer override for
-        running against a local stack (CONTRIBUTING.md). It is deliberately
-        undocumented for customers — there is no `endpoint` parameter at all."""
+    def test_endpoint_env_var_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`INDRATRACE_ENDPOINT` is the SUPPORTED override (1.1; README
+        § Configuration) for self-hosted deployments and IndraTrace's own dev
+        environment. Still no `endpoint` parameter — the gateway is a property
+        of the deployment, so it is set where the deployment's environment is."""
         monkeypatch.setenv(ENV_ENDPOINT, "http://localhost:9999")
 
-        assert resolve_config(api_key=TEST_API_KEY).endpoint == "http://localhost:9999"
+        cfg = resolve_config(api_key=TEST_API_KEY)
+        assert cfg.endpoint == "http://localhost:9999"
+        assert cfg.endpoint_source == ENDPOINT_SOURCE_ENV
+
+    def test_the_removed_endpoint_parameter_points_at_the_env_var(self) -> None:
+        """The decision, pinned: `endpoint=` stays removed, and the message for
+        anyone who passes it names the override that exists instead."""
+        from indratrace.config import REMOVED_PARAMS
+
+        assert "INDRATRACE_ENDPOINT" in REMOVED_PARAMS["endpoint"]
 
     def test_export_timeout_is_shorter_than_otel_default(self) -> None:
         """OTel defaults to 10s, which stalls shutdown when the gateway is
@@ -248,7 +295,10 @@ class TestResource:
         default honors OTEL_SERVICE_NAME, which stamping over would clobber."""
         attrs = build_resource(resolve_config(api_key=TEST_API_KEY)).attributes
 
-        assert attrs["service.name"] == "unknown_service"
+        # Compared with OTel's own default in this process, not a literal: it
+        # is `unknown_service` on older OTel and `unknown_service:<process>`
+        # on 1.45+. The claim is only that we did not stamp over it.
+        assert attrs["service.name"] == Resource.create({}).attributes["service.name"]
 
     def test_service_name_respects_otel_service_name(
         self, monkeypatch: pytest.MonkeyPatch
@@ -277,3 +327,79 @@ class TestResource:
         attrs = build_resource(resolve_config(api_key=TEST_API_KEY)).attributes
         assert attrs["telemetry.sdk.language"] == "python"
         assert "telemetry.sdk.version" in attrs
+
+
+class TestSecretHandling:
+    def test_repr_never_contains_the_api_key(self) -> None:
+        """A logged or printed config must not leak the credential."""
+        secret = "it_live_do-not-log-me-7f3a"
+        cfg = resolve_config(api_key=secret)
+
+        assert secret not in repr(cfg)
+        assert secret not in str(cfg)
+        assert cfg.api_key == secret, "hidden from repr, still used"
+
+
+class TestPlaintextEndpointWarning:
+    """An explicit http:// endpoint off-box warns; it never blocks."""
+
+    def test_the_default_endpoint_is_https(self, no_endpoint_env: None) -> None:
+        cfg = resolve_config(api_key=TEST_API_KEY)
+
+        assert cfg.endpoint.startswith("https://")
+        assert plaintext_endpoint_warning(cfg.endpoint) is None
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://ingest.example.com",
+            "http://10.0.0.5:8088",
+            "HTTP://gateway.internal:4318/",
+        ],
+    )
+    def test_remote_http_warns(self, endpoint: str) -> None:
+        message = plaintext_endpoint_warning(endpoint)
+
+        assert message is not None
+        assert "unencrypted" in message
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://ingest.example.com",
+            "http://localhost:8088",
+            "http://127.0.0.1:1",
+            "http://[::1]:4318",
+        ],
+    )
+    def test_https_and_loopback_do_not_warn(self, endpoint: str) -> None:
+        assert plaintext_endpoint_warning(endpoint) is None
+
+
+class TestUrlCredentials:
+    @pytest.mark.parametrize(
+        ("raw", "shown"),
+        [
+            ("https://user:pass@host.example", "https://***@host.example"),
+            ("https://token@host.example:4318/x", "https://***@host.example:4318/x"),
+            (
+                "failed to reach http://u:p@10.0.0.5:4318/v1/traces (refused)",
+                "failed to reach http://***@10.0.0.5:4318/v1/traces (refused)",
+            ),
+            ("https://host.example", "https://host.example"),
+            ("mail me at a@b.example", "mail me at a@b.example"),
+        ],
+    )
+    def test_redact_url_credentials(self, raw: str, shown: str) -> None:
+        assert redact_url_credentials(raw) == shown
+
+    def test_display_endpoint_hides_credentials_but_transport_keeps_them(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(ENV_ENDPOINT, "https://user:s3cret@gw.example")
+        cfg = resolve_config(api_key=TEST_API_KEY)
+
+        assert cfg.display_endpoint == "https://***@gw.example"
+        assert "s3cret" not in repr(cfg.display_endpoint)
+        # Transport still needs them: requests sends them as basic auth.
+        assert cfg.traces_endpoint == "https://user:s3cret@gw.example/v1/traces"

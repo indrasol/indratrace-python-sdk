@@ -15,9 +15,12 @@ credential and two labels about the *deployable* — `service.name`, `service.ve
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import re
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from opentelemetry.sdk.resources import Resource
 
@@ -38,13 +41,18 @@ class IndraTraceConfigError(ValueError):
     """
 
 
-#: Where the SDK ships OTLP. This is the IndraTrace **ingest gateway** — the
-#: component that authenticates the API key and stamps tenant/product/env
-#: (platform ADR 0010 §1). It replaces the pre-gateway collector port (`:4318`),
-#: which no longer terminates SDK traffic. Becomes the production ingest
-#: hostname when it is decided (platform deployment arc phase 5); until then the
-#: dev gateway. One named constant, one place — there is no `endpoint` parameter.
-DEFAULT_ENDPOINT = "http://localhost:8088"
+#: Where the SDK ships OTLP when `INDRATRACE_ENDPOINT` is unset: the IndraTrace
+#: **production** ingest gateway — the component that authenticates the API key
+#: and stamps tenant/product/env (ADR 0009).
+#:
+#: **Production, deliberately, and not a development gateway.** This package is
+#: public on PyPI, and a development default would route a stranger's telemetry
+#: somewhere with no production guarantees. IndraTrace's own engineers and
+#: self-hosted deployments
+#: set `INDRATRACE_ENDPOINT` (a supported override since 1.1); a customer only
+#: ever holds a key. One named constant, one place — there is no `endpoint`
+#: parameter (see `REMOVED_PARAMS["endpoint"]` for why that stays true).
+DEFAULT_ENDPOINT = "https://ingest.indratrace.com"
 
 DEFAULT_SERVICE_VERSION = "0.0.0"
 
@@ -57,11 +65,33 @@ DEFAULT_EXPORT_TIMEOUT_SECONDS = 3.0
 #: ever sets. Everything else the platform derives from it.
 ENV_API_KEY = "INDRATRACE_API_KEY"
 
-#: **Undocumented developer override**, for running the SDK against a local
-#: stack (see CONTRIBUTING.md). Deliberately absent from the README and from
-#: conventions.md's customer-facing Transport section: a customer points at
-#: IndraTrace by holding an IndraTrace key, not by choosing a host.
+#: **Supported override** (documented since 1.1; README § Configuration) for the
+#: two callers who legitimately send somewhere other than `DEFAULT_ENDPOINT`:
+#: self-hosted IndraTrace deployments, permanently, and IndraTrace's own dev
+#: environment. It is an env var and not a parameter on purpose: which gateway a
+#: deployment talks to is a property of the deployment, set where the rest of its
+#: environment is provisioned — the same code runs against the cloud in one
+#: place and a self-hosted gateway in another without a diff. A customer of the
+#: hosted service never sets it.
 ENV_ENDPOINT = "INDRATRACE_ENDPOINT"
+
+#: Startup preflight mode (see `preflight.py`). `0`/`off`/`false`/`no` disables
+#: the probe entirely (air-gapped deployments, unit tests); `strict` turns a
+#: failed probe into `IndraTraceConfigError` (for CI); anything else — including
+#: unset — is `warn`: log the diagnosis once and continue. See
+#: `resolve_preflight_mode`.
+ENV_PREFLIGHT = "INDRATRACE_PREFLIGHT"
+
+#: Seconds the startup preflight waits to *connect*. Two seconds is long enough
+#: for a cold TLS handshake to a far region and short enough that a dead
+#: endpoint cannot delay a service boot meaningfully. A connect that does not
+#: complete in this window is the egress-blocked signature.
+PREFLIGHT_TIMEOUT_SECONDS = 2.0
+#: Seconds the preflight waits for the *response* once connected. Longer than
+#: connect: the gateway resolves the key against its control plane before
+#: answering, which was measured at ~1.3s live, and a false "stalled" on a slow
+#: lookup would send someone hunting a proxy that is not there.
+PREFLIGHT_READ_TIMEOUT_SECONDS = 3.0
 
 #: Opt-in prompt/completion content capture (default off). Truthy values:
 #: 1/true/yes/on (case-insensitive). See `resolve_capture_content`.
@@ -81,6 +111,14 @@ ENV_KEY = "INDRATRACE_KEY"  # the pre-1.0 deprecated alias for ENV_API_KEY
 
 #: Env values that read as True. Anything else (incl. unset) is False.
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+#: Env values that read as "off" for `INDRATRACE_PREFLIGHT`.
+_FALSY = frozenset({"0", "false", "no", "off"})
+
+#: Where `ObsConfig.endpoint` came from. The preflight's messages depend on it:
+#: "nothing listens at localhost" means one thing when the *package default*
+#: put you there and another when `INDRATRACE_ENDPOINT` did.
+ENDPOINT_SOURCE_DEFAULT = "default"
+ENDPOINT_SOURCE_ENV = "env"
 
 #: Auth header carrying the API key (docs/conventions.md § Transport). The wire
 #: header name is a fixed transport contract: it did not change with the
@@ -119,7 +157,9 @@ REMOVED_PARAMS: dict[str, str] = {
     "endpoint": (
         "`endpoint` was removed in 1.0 — the SDK ships to the IndraTrace ingest "
         "gateway, and the API key is what routes your telemetry once it lands. "
-        "Drop the argument and call init_observability(api_key=...)."
+        "Drop the argument and call init_observability(api_key=...). Self-hosted "
+        "or dev gateway? Set the INDRATRACE_ENDPOINT environment variable in that "
+        "deployment instead — it is the supported override."
     ),
     "ingest_key": (
         "`ingest_key` was removed in 1.0 — it was the pre-0.5 name for "
@@ -157,14 +197,23 @@ class ObsConfig:
     environment — the gateway derives those from `api_key` (ADR 0009).
     """
 
-    api_key: str
+    #: `repr=False` so a logged or printed config never carries the credential.
+    api_key: str = field(repr=False)
     endpoint: str = DEFAULT_ENDPOINT
+    #: `ENDPOINT_SOURCE_DEFAULT` or `ENDPOINT_SOURCE_ENV` — which one supplied
+    #: `endpoint`. Diagnostics only; never shapes transport.
+    endpoint_source: str = ENDPOINT_SOURCE_DEFAULT
     #: `None` means "let OpenTelemetry decide" — its own default respects
     #: `OTEL_SERVICE_NAME`/`OTEL_RESOURCE_ATTRIBUTES` and otherwise yields
     #: `unknown_service`. Stamping a value of our own here would clobber that.
     service_name: str | None = None
     service_version: str = DEFAULT_SERVICE_VERSION
     export_timeout_seconds: float = DEFAULT_EXPORT_TIMEOUT_SECONDS
+
+    @property
+    def display_endpoint(self) -> str:
+        """`endpoint` with URL credentials hidden: the only form to log or show."""
+        return redact_url_credentials(self.endpoint)
 
     @property
     def traces_endpoint(self) -> str:
@@ -240,15 +289,77 @@ def resolve_config(
         IndraTraceConfigError: if no API key is given and `INDRATRACE_API_KEY`
             is unset or empty.
     """
+    endpoint_override = _first(os.getenv(ENV_ENDPOINT))
     return ObsConfig(
         api_key=_resolve_api_key(api_key),
         # Developer override only (see ENV_ENDPOINT); customers never set it.
-        endpoint=_first(os.getenv(ENV_ENDPOINT)) or DEFAULT_ENDPOINT,
+        endpoint=endpoint_override or DEFAULT_ENDPOINT,
+        endpoint_source=(
+            ENDPOINT_SOURCE_ENV if endpoint_override else ENDPOINT_SOURCE_DEFAULT
+        ),
         service_name=service_name or None,
         service_version=service_version or DEFAULT_SERVICE_VERSION,
         # Read at call time, not bound as a dataclass default, so the test
         # suite can shrink it and not pay a real export backoff per teardown.
         export_timeout_seconds=DEFAULT_EXPORT_TIMEOUT_SECONDS,
+    )
+
+
+#: `scheme://userinfo@` — credentials embedded in a URL.
+_URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@")
+
+
+def redact_url_credentials(text: str) -> str:
+    """`text` with any `user:pass@` in a URL replaced by `***@`.
+
+    `INDRATRACE_ENDPOINT=https://user:pass@host` works (requests sends the
+    credentials as basic auth), so the endpoint must never be shown as-is.
+    Works on free text, not just a bare URL, because exception messages and
+    diagnoses embed the endpoint in prose.
+    """
+    return _URL_USERINFO.sub(r"\1***@", text)
+
+
+def redact_api_key(text: str, api_key: str) -> str:
+    """`text` with every occurrence of the key replaced by `[REDACTED]`.
+
+    Needed because some transport errors quote the header value back: a key
+    with a stray newline makes `requests` raise `InvalidHeader` whose message
+    contains the whole key. Also redacts the whitespace-stripped key and its
+    `repr()` body, the two other forms such a message prints it in.
+    """
+    for form in {api_key, api_key.strip(), repr(api_key)[1:-1]}:
+        if form:
+            text = text.replace(form, "[REDACTED]")
+    return text
+
+
+def _is_loopback_host(host: str) -> bool:
+    """`localhost`, `127.0.0.0/8` or `::1` — traffic that never leaves the box."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def plaintext_endpoint_warning(endpoint: str) -> str | None:
+    """The warning for an `http://` endpoint that is not loopback, else None.
+
+    Plain HTTP to another host sends the API key (the `x-indratrace-key`
+    header) and every span, log and metric unencrypted across the network. Only
+    reachable through `INDRATRACE_ENDPOINT` — the default is HTTPS. A warning,
+    not a refusal: a self-hosted gateway on a private network may be plain HTTP
+    on purpose, and fail-silence (ADR 0003) means config never blocks export.
+    """
+    parts = urlsplit(endpoint)
+    if parts.scheme.lower() != "http" or _is_loopback_host(parts.hostname or ""):
+        return None
+    return (
+        f"INDRATRACE_ENDPOINT is plain http:// ({parts.hostname}): the API key and "
+        "all telemetry will cross the network unencrypted. Use an https:// "
+        "endpoint unless this network is trusted."
     )
 
 
@@ -287,6 +398,33 @@ def resolve_debug(debug: bool | None = None) -> bool:
     if raw is None:
         return False
     return raw.strip().lower() in _TRUTHY
+
+
+#: The three `INDRATRACE_PREFLIGHT` modes (see `resolve_preflight_mode`).
+PREFLIGHT_OFF = "off"
+PREFLIGHT_WARN = "warn"
+PREFLIGHT_STRICT = "strict"
+
+
+def resolve_preflight_mode() -> str:
+    """How `init_observability` runs its startup preflight, from the env.
+
+    `INDRATRACE_PREFLIGHT` unset or anything unrecognised → `warn` (the
+    default: probe once, log the diagnosis, never raise). `0/false/no/off` →
+    `off` (no network call at all — air-gapped hosts, unit tests). `strict` →
+    a failed probe raises `IndraTraceConfigError`, for a CI job that wants a
+    misconfigured service to fail its build rather than boot and drop data.
+
+    Env-only, no argument: the mode is a property of *where* the process runs
+    (a CI runner, an air-gapped box), not of the code, and configuration stays
+    singular.
+    """
+    raw = (os.getenv(ENV_PREFLIGHT) or "").strip().lower()
+    if raw in _FALSY:
+        return PREFLIGHT_OFF
+    if raw == PREFLIGHT_STRICT:
+        return PREFLIGHT_STRICT
+    return PREFLIGHT_WARN
 
 
 #: The three the **gateway** owns and the SDK must never send (platform P80,

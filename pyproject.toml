@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,13 +7,15 @@ name = "indratrace"
 dynamic = ["version"]
 description = "OpenTelemetry-native observability SDK for the IndraTrace platform — one-line traces, logs, metrics, and model-call token usage for web apps and AI agents."
 readme = "README.md"
-license = { text = "Apache-2.0" }
+# PEP 639: an SPDX expression, plus the license text shipped in both the sdist
+# and the wheel metadata (pinned explicitly, not left to the default glob).
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 # 3.9 is end-of-life; the SDK supports maintained interpreters only.
 requires-python = ">=3.10"
 authors = [{ name = "Indrasol", email = "rithin.gullapalli@indrasol.com" }]
 classifiers = [
     "Development Status :: 4 - Beta",
-    "License :: OSI Approved :: Apache Software License",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -24,8 +26,10 @@ classifiers = [
 ]
 # OTel only (ADR 0003). Provider instrumentation ships as optional extras.
 dependencies = [
-    "opentelemetry-sdk>=1.20",
-    "opentelemetry-exporter-otlp-proto-http>=1.20",
+    # The floor is what CI's unit-floor job proves: the full offline suite
+    # passes at 1.41 with every extra installed, and fails at 1.40.
+    "opentelemetry-sdk>=1.41",
+    "opentelemetry-exporter-otlp-proto-http>=1.41",
 ]
 
 [project.optional-dependencies]
@@ -79,12 +83,6 @@ dev = [
 Homepage = "https://indrasol.com"
 Repository = "https://github.com/indrasol/indratrace-python-sdk"
 Changelog = "https://github.com/indrasol/indratrace-python-sdk/blob/main/CHANGELOG.md"
-
-[tool.setuptools]
-# Ship the Apache-2.0 text in both the sdist and the wheel metadata. This is
-# also setuptools' default glob, but pinning it makes sdist inclusion explicit
-# and independent of the setuptools version's default behavior.
-license-files = ["LICENSE"]
 
 [tool.setuptools.dynamic]
 version = { attr = "indratrace.version.__version__" }

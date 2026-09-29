@@ -28,18 +28,25 @@ from .agent_sdk import (
     enable_agent_sdk_instrumentation,
 )
 from .config import (
+    PREFLIGHT_OFF,
+    PREFLIGHT_STRICT,
     REMOVED_PARAMS,
     IndraTraceConfigError,
     ObsConfig,
     build_resource,
+    plaintext_endpoint_warning,
+    redact_api_key,
+    redact_url_credentials,
     resolve_capture_content,
     resolve_config,
     resolve_debug,
+    resolve_preflight_mode,
     warn_about_removed_env_vars,
 )
 from .context import SessionSpanProcessor
 from .genai import _uninstrument_genai, enable_genai_instrumentation
 from .logs import _disable_loguru_bridge, enable_loguru_bridge
+from .preflight import Diagnosis, ExportHealth, run_preflight
 from .version import __version__
 from .web import _uninstrument_http, enable_http_instrumentation
 
@@ -95,6 +102,47 @@ class _ExcludeIndraTrace(logging.Filter):
         return root not in _EXPORT_EXCLUDED_LOGGERS
 
 
+#: OpenTelemetry's OTLP/HTTP exporter loggers. They log a failed export's
+#: reason verbatim, and `requests` puts the header value in that reason when
+#: the key contains a newline. A filter only runs on the logger that creates the
+#: record, so it goes on each of these rather than on a parent.
+_OTLP_EXPORTER_LOGGERS = (
+    "opentelemetry.exporter.otlp.proto.http.trace_exporter",
+    "opentelemetry.exporter.otlp.proto.http._log_exporter",
+    "opentelemetry.exporter.otlp.proto.http.metric_exporter",
+)
+
+
+class _RedactApiKey(logging.Filter):
+    """Replace the API key in a record's message with `[REDACTED]`, and any
+    URL credentials with `***`."""
+
+    def __init__(self, api_key: str) -> None:
+        super().__init__()
+        self._api_key = api_key
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 — a malformed record is not ours to fix
+            return True
+        redacted = _redact_secrets(message, self._api_key)
+        if redacted != message:
+            record.msg, record.args = redacted, None
+        return True
+
+
+#: The `_RedactApiKey` filter init attached, so `_reset_for_tests` can remove it.
+_redact_filter: _RedactApiKey | None = None
+
+
+def _attach_key_redaction(api_key: str) -> _RedactApiKey:
+    redact = _RedactApiKey(api_key)
+    for name in _OTLP_EXPORTER_LOGGERS:
+        logging.getLogger(name).addFilter(redact)
+    return redact
+
+
 def _shutdown_quietly(providers: Iterable[_Shutdownable | None]) -> None:
     """Best-effort teardown. Used on the partial-init path and by tests.
 
@@ -133,68 +181,148 @@ def _export_failure_hint(status: int | None) -> str:
     return f" — HTTP {status}: the gateway was reached and refused the batch."
 
 
-def _audible_export(exporter: Any, signal: str) -> Any:
-    """Wrap an OTLP exporter's `export()` so each attempt logs its outcome.
+def _redact_secrets(text: str, api_key: str | None) -> str:
+    """The API key and any URL credentials, removed from `text`."""
+    if api_key:
+        text = redact_api_key(text, api_key)
+    return redact_url_credentials(text)
+
+
+def _scrub_exception(exc: BaseException, api_key: str | None) -> None:
+    """Redact the API key and URL credentials from `exc` and its chain, in
+    place, before anything formats it.
+
+    A key with a stray newline makes `requests` raise `InvalidHeader` quoting
+    the header value. On older OpenTelemetry releases that exception escapes the
+    exporter and the batch processor logs it, with a traceback, under its own
+    logger, which a logging filter on the exporter loggers cannot reach.
+    Rewriting the exception's `args` fixes every later `str(exc)` and traceback.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        try:
+            current.args = tuple(
+                _redact_secrets(arg, api_key) if isinstance(arg, str) else arg
+                for arg in current.args
+            )
+        except Exception:  # noqa: BLE001 — scrubbing must never break an export
+            pass
+        current = current.__cause__ or current.__context__
+
+
+def _observe_export(
+    exporter: Any,
+    signal: str,
+    health: ExportHealth | None = None,
+    *,
+    audible: bool = False,
+    api_key: str | None = None,
+) -> Any:
+    """Wrap an OTLP exporter's `export()` so each attempt reports its outcome.
 
     The exporters are async and batched, so a delivery failure would otherwise
-    surface only inside OpenTelemetry's own logger — invisible to a user who
-    turned `debug=True` on the `indratrace` logger. This wrapper makes the
-    outcome *audible* under our logger instead: an ``export ok`` line at DEBUG on
-    success, and a clear ``export FAILED`` WARNING with the reason on failure.
-    Behavior is unchanged (it returns the real result and re-raises nothing new)
-    — it only narrates, which is the whole point of debug mode (ADR 0003:
-    fail-silent becomes fail-audible, never fail-loud into the app).
+    surface only inside OpenTelemetry's own logger — once per batch, with no
+    diagnosis, and invisible to anyone who has not configured that logger. Two
+    things listen here instead:
 
-    Only used when `debug` is on; a normal init leaves the exporter untouched so
-    the hot export path pays nothing.
+    - `health` (always on): counts consecutive failures and, past a threshold,
+      logs ONE error naming the cause — egress blocked, rejected key, no card
+      on file — then backs off to at most one line per interval and logs
+      recovery once (`preflight.ExportHealth`).
+    - `audible` (`debug=True` only): narrates every attempt under our logger —
+      an ``export ok`` line at DEBUG on success, an ``export FAILED`` WARNING
+      with the reason on failure.
+
+    Behavior is unchanged (it returns the real result and re-raises nothing
+    new) — it only observes (ADR 0003: fail-silent becomes fail-audible, never
+    fail-loud into the app).
     """
     real_export = exporter.export
 
     # The result enum names only SUCCESS/FAILURE, so `export()` alone cannot tell
     # a rejected key from an unreachable gateway — the exact distinction the
-    # README asks the user to make. The HTTP status is known one layer down, in
-    # the exporter's `_export`, so record it there and read it back when
-    # narrating. `_export` is private OTel API: wrapped only when present, and
-    # its absence costs only the status (fail-silent — never a broken export).
-    seen_status: list[int | None] = [None]
+    # diagnosis needs. The HTTP response is known one layer down, in the
+    # exporter's `_export`, so record it there and read it back when reporting.
+    # `_export` is private OTel API: wrapped only when present, and its absence
+    # costs only the status (fail-silent — never a broken export).
+    seen_response: list[Any] = [None]
+    seen_exc: list[BaseException | None] = [None]
     real_low_level = getattr(exporter, "_export", None)
     if callable(real_low_level):
 
         def _export_recording(*args: Any, **kwargs: Any) -> Any:
-            response = real_low_level(*args, **kwargs)
-            seen_status[0] = getattr(response, "status_code", None)
+            try:
+                response = real_low_level(*args, **kwargs)
+            except BaseException as exc:
+                _scrub_exception(exc, api_key)
+                seen_exc[0] = exc
+                raise
+            seen_response[0] = response
             return response
 
         exporter._export = _export_recording
 
+    def _status() -> int | None:
+        return getattr(seen_response[0], "status_code", None)
+
     def export(*args: Any, **kwargs: Any) -> Any:
-        seen_status[0] = None  # this attempt's status, not the previous one's
+        seen_response[0] = None  # this attempt's outcome, not the previous one's
+        seen_exc[0] = None
         try:
             result = real_export(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001 — narrate, never change behavior
-            logger.warning(
-                "indratrace: %s export FAILED: %s", signal, exc, exc_info=True
-            )
+            _scrub_exception(exc, api_key)
+            if audible:
+                reason = str(exc)
+                redacted = _redact_secrets(reason, api_key)
+                # The traceback would repeat the key, so drop it when redacting.
+                logger.warning(
+                    "indratrace: %s export FAILED: %s",
+                    signal,
+                    redacted,
+                    exc_info=redacted == reason,
+                )
+            if health is not None:
+                health.record_failure(signal, exc=exc)
             raise
         # The three result enums all name their success member SUCCESS; anything
         # else is a drop (dead gateway, 4xx, timeout).
         if getattr(result, "name", None) == "SUCCESS":
-            logger.debug("indratrace: %s export ok", signal)
+            if audible:
+                logger.debug("indratrace: %s export ok", signal)
+            if health is not None:
+                health.record_success(signal)
         else:
-            logger.warning(
-                "indratrace: %s export FAILED (%s)%s",
-                signal,
-                getattr(result, "name", result),
-                _export_failure_hint(seen_status[0]),
-            )
+            if audible:
+                logger.warning(
+                    "indratrace: %s export FAILED (%s)%s",
+                    signal,
+                    getattr(result, "name", result),
+                    _export_failure_hint(_status()),
+                )
+            if health is not None:
+                health.record_failure(
+                    signal, response=seen_response[0], exc=seen_exc[0]
+                )
         return result
 
     exporter.export = export
     return exporter
 
 
+def _audible_export(exporter: Any, signal: str) -> Any:
+    """`_observe_export` with narration on and no health tracker — the
+    `debug=True` behaviour on its own. Kept as a name for the debug tests."""
+    return _observe_export(exporter, signal, None, audible=True)
+
+
 def _build_tracer_provider(
-    cfg: ObsConfig, resource: Resource, debug: bool = False
+    cfg: ObsConfig,
+    resource: Resource,
+    health: ExportHealth | None = None,
+    debug: bool = False,
 ) -> TracerProvider:
     """Spans over OTLP/HTTP, batched in the background."""
     provider = TracerProvider(resource=resource)
@@ -208,8 +336,7 @@ def _build_tracer_provider(
         headers=cfg.headers,
         timeout=cfg.export_timeout_seconds,
     )
-    if debug:
-        _audible_export(exporter, "traces")
+    _observe_export(exporter, "traces", health, audible=debug, api_key=cfg.api_key)
     # Batched + async: a dead collector drops spans, it never blocks a request
     # or raises into the caller.
     provider.add_span_processor(BatchSpanProcessor(exporter))
@@ -217,7 +344,10 @@ def _build_tracer_provider(
 
 
 def _build_logger_provider(
-    cfg: ObsConfig, resource: Resource, debug: bool = False
+    cfg: ObsConfig,
+    resource: Resource,
+    health: ExportHealth | None = None,
+    debug: bool = False,
 ) -> LoggerProvider:
     """Log records over OTLP/HTTP, batched in the background, same resource."""
     provider = LoggerProvider(resource=resource)
@@ -226,14 +356,16 @@ def _build_logger_provider(
         headers=cfg.headers,
         timeout=cfg.export_timeout_seconds,
     )
-    if debug:
-        _audible_export(exporter, "logs")
+    _observe_export(exporter, "logs", health, audible=debug, api_key=cfg.api_key)
     provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
     return provider
 
 
 def _build_meter_provider(
-    cfg: ObsConfig, resource: Resource, debug: bool = False
+    cfg: ObsConfig,
+    resource: Resource,
+    health: ExportHealth | None = None,
+    debug: bool = False,
 ) -> MeterProvider:
     """Metrics over OTLP/HTTP on a periodic reader, same resource.
 
@@ -246,8 +378,7 @@ def _build_meter_provider(
         headers=cfg.headers,
         timeout=cfg.export_timeout_seconds,
     )
-    if debug:
-        _audible_export(exporter, "metrics")
+    _observe_export(exporter, "metrics", health, audible=debug, api_key=cfg.api_key)
     reader = PeriodicExportingMetricReader(
         exporter,
         # Bound each periodic export. Note this does *not* bound `shutdown()`,
@@ -390,7 +521,8 @@ def _banner_lines(
     lines = [
         f"{_PRODUCT_NAME} SDK v{__version__} initialized",
         f"  service={_service_name(resource)} version={cfg.service_version}",
-        f"  endpoint={cfg.endpoint} (traces={cfg.traces_endpoint})",
+        f"  endpoint={cfg.display_endpoint} "
+        f"(traces={redact_url_credentials(cfg.traces_endpoint)})",
         f"  api_key=set capture_content={'on' if capture_content else 'off'}",
         "  identity: product, deployment.environment and tenant.id are stamped "
         "by IndraTrace from your API key",
@@ -429,6 +561,44 @@ def _debug_connectivity_probe(tracer_provider: TracerProvider) -> None:
         tracer_provider.force_flush()
     except Exception:  # noqa: BLE001 — a probe must never break init
         logger.debug("indratrace: debug connectivity probe failed", exc_info=True)
+
+
+def _preflight(cfg: ObsConfig) -> Diagnosis | None:
+    """Run the startup preflight per `INDRATRACE_PREFLIGHT`, and tell the caller.
+
+    `off` → no network call at all, returns None. Otherwise one request
+    (`preflight.run_preflight`, ~2s bounded), and:
+
+    - 2xx → silent. Nothing to say; the debug banner already reports the endpoint.
+    - anything else → the diagnosis is logged ONCE, at ERROR when it is the
+      caller's configuration (blocked egress, bad key, no card…) and WARNING
+      when it is ours or transient (collector down, rate-limited). Then init
+      continues: a misconfigured exporter still costs the host app nothing.
+    - `strict` → the same diagnosis is raised as `IndraTraceConfigError`
+      instead, for a CI job that would rather fail the build than boot a
+      service that drops its telemetry.
+
+    Never logs the key (the diagnosis is built from endpoint + status + the
+    gateway's problem body only), and never raises outside `strict`.
+    """
+    mode = resolve_preflight_mode()
+    if mode == PREFLIGHT_OFF:
+        logger.debug("indratrace: startup preflight disabled (INDRATRACE_PREFLIGHT)")
+        return None
+    try:
+        diagnosis = run_preflight(cfg)
+    except Exception:  # noqa: BLE001 — a probe must never break init
+        logger.debug("indratrace: startup preflight crashed", exc_info=True)
+        return None
+    if diagnosis.ok:
+        logger.debug(
+            "indratrace: startup preflight ok (endpoint=%s)", cfg.display_endpoint
+        )
+        return diagnosis
+    if mode == PREFLIGHT_STRICT:
+        raise IndraTraceConfigError(diagnosis.message)
+    logger.log(diagnosis.level, "%s", diagnosis.message)
+    return diagnosis
 
 
 def _reject_removed_kwargs(kwargs: dict[str, Any]) -> None:
@@ -483,6 +653,25 @@ def init_observability(
     the telemetry lands — the SDK sends none of them, and there is nothing to
     configure. `product`, `env`, `endpoint` and `ingest_key` were removed in 1.0;
     passing one raises `IndraTraceConfigError` explaining what to do instead.
+
+    **Where it ships.** The IndraTrace production ingest gateway
+    (`config.DEFAULT_ENDPOINT`). A self-hosted deployment, or IndraTrace's own
+    dev environment, sets the `INDRATRACE_ENDPOINT` environment variable to its
+    gateway's base URL instead — a supported override, and an env var rather
+    than a parameter on purpose: the gateway is a property of the deployment,
+    so it is set where the deployment's environment is, and the code is the
+    same everywhere.
+
+    **It checks, once.** Before returning, one ~2s authenticated request goes
+    to the gateway and anything other than 2xx is logged as one paragraph
+    naming the cause: the hostname does not resolve, outbound egress is blocked
+    (firewall/NSG/UDR/proxy on 443), `INDRATRACE_ENDPOINT` was never set, TLS
+    interception, a rejected key (401), no card on file (402), not-the-gateway
+    (404). Non-fatal: the app keeps running. `INDRATRACE_PREFLIGHT=strict`
+    raises `IndraTraceConfigError` instead (for CI); `INDRATRACE_PREFLIGHT=0`
+    skips the request (air-gapped hosts). After that, exports are watched: three
+    consecutive failed batches log the same diagnosis once, then at most once
+    every five minutes, and recovery logs one line.
 
     Args:
         api_key: The IndraTrace API key — the only required configuration, and
@@ -542,9 +731,10 @@ def init_observability(
 
     Raises:
         IndraTraceConfigError: no API key was given (and `INDRATRACE_API_KEY` is
-            unset or empty), or a parameter removed in 1.0 was passed. These are
-            the *only* failures that surface — both are startup mistakes a
-            developer is standing in front of, and both used to be invisible.
+            unset or empty), or a parameter removed in 1.0 was passed — or, only
+            when `INDRATRACE_PREFLIGHT=strict`, the startup preflight did not
+            get a 2xx. These are the *only* failures that surface — all are
+            startup mistakes a developer is standing in front of.
         TypeError: an unrecognized keyword argument, as for any function.
 
     Beyond those, this never raises and never blocks the host app (ADR 0003).
@@ -554,7 +744,7 @@ def init_observability(
     """
     global _initialized, _provider, _logger_provider, _meter_provider
     global _log_handler, _root_level_before
-    global _debug_handler, _debug_level_before
+    global _debug_handler, _debug_level_before, _redact_filter
 
     # Before the idempotency guard: a call that names a removed parameter is
     # wrong on the second call too, and the migration message is the point.
@@ -589,6 +779,19 @@ def init_observability(
     if debug_on:
         _debug_handler, _debug_level_before = _enable_debug_logging()
 
+    # Warn, never block: a self-hosted gateway may be plain HTTP on purpose.
+    plaintext_warning = plaintext_endpoint_warning(cfg.endpoint)
+    if plaintext_warning:
+        logger.warning("indratrace: %s", plaintext_warning)
+
+    # One short request to the gateway, and a named diagnosis if it did not
+    # come back 2xx. Before the providers exist so that `strict` mode raises
+    # with nothing built and nothing to unwind. Non-fatal by default.
+    _preflight(cfg)
+
+    # Before any exporter exists, so none of their failure logs can carry the key.
+    _redact_filter = _attach_key_redaction(cfg.api_key)
+
     # From here on, fail-silent (ADR 0003). Track what got built so a failure
     # part-way through doesn't strand background exporter threads owned by
     # nothing.
@@ -600,11 +803,13 @@ def init_observability(
         # metrics with different identities and break correlation.
         resource = build_resource(cfg)
 
-        tracer_provider = _build_tracer_provider(cfg, resource, debug=debug_on)
+        # One tracker for all three exporters: one host, one key, one diagnosis.
+        health = ExportHealth(cfg)
+        tracer_provider = _build_tracer_provider(cfg, resource, health, debug=debug_on)
         built.append(tracer_provider)
-        logger_provider = _build_logger_provider(cfg, resource, debug=debug_on)
+        logger_provider = _build_logger_provider(cfg, resource, health, debug=debug_on)
         built.append(logger_provider)
-        meter_provider = _build_meter_provider(cfg, resource, debug=debug_on)
+        meter_provider = _build_meter_provider(cfg, resource, health, debug=debug_on)
         built.append(meter_provider)
 
         # Everything that can fail happens *before* the globals are published.
@@ -698,7 +903,7 @@ def init_observability(
         logger.info(
             "indratrace initialized: service=%s endpoint=%s",
             _service_name(resource),
-            cfg.endpoint,
+            cfg.display_endpoint,
         )
         if debug_on:
             for line in _banner_lines(
@@ -753,7 +958,7 @@ def _reset_for_tests() -> None:
     """Tear down module state so a test can init again. Not public API."""
     global _initialized, _provider, _logger_provider, _meter_provider
     global _log_handler, _root_level_before
-    global _debug_handler, _debug_level_before
+    global _debug_handler, _debug_level_before, _redact_filter
 
     root = logging.getLogger()
     if _log_handler is not None:
@@ -777,6 +982,10 @@ def _reset_for_tests() -> None:
 
     _shutdown_quietly((_provider, _logger_provider, _meter_provider))
 
+    if _redact_filter is not None:
+        for name in _OTLP_EXPORTER_LOGGERS:
+            logging.getLogger(name).removeFilter(_redact_filter)
+
     _uninstrument_http()
     _uninstrument_genai()
     _disable_agent_sdk_instrumentation()
@@ -789,3 +998,4 @@ def _reset_for_tests() -> None:
     _root_level_before = None
     _debug_handler = None
     _debug_level_before = None
+    _redact_filter = None

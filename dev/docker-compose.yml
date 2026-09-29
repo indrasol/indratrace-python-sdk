@@ -13,8 +13,8 @@ services:
       CLICKHOUSE_PASSWORD: otel
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     ports:
-      - "8123:8123"   # HTTP
-      - "9000:9000"   # native
+      - "127.0.0.1:8123:8123"   # HTTP
+      - "127.0.0.1:9000:9000"   # native
     volumes:
       - clickhouse-data:/var/lib/clickhouse
     ulimits:
@@ -35,8 +35,8 @@ services:
     volumes:
       - ./otel-collector-config.yaml:/etc/otel/config.yaml:ro
     ports:
-      - "4317:4317"   # OTLP/gRPC
-      - "4318:4318"   # OTLP/HTTP
+      - "127.0.0.1:4317:4317"   # OTLP/gRPC
+      - "127.0.0.1:4318:4318"   # OTLP/HTTP
     depends_on:
       clickhouse:
         condition: service_healthy

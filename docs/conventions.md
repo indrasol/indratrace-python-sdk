@@ -1,8 +1,9 @@
 # Conventions — the attribute contract
 
 *Living doc. **This is the real API between the SDK and the platform.** The two
-repos are compatible if and only if they agree on this file. Change it only via
-a new ADR, and mirror changes in the platform repo.*
+sides are compatible if and only if they agree on this file. Change it only via
+a new ADR; the IndraTrace backend (closed source) consumes this contract and
+does not fork it.*
 
 ## Resource attributes
 
@@ -73,7 +74,7 @@ attribute, both lists move together.**
   > truth here and the manual fallback (`record_llm_usage`) stamps the same
   > drifted name, so hand- and auto-instrumented spans are identical. **The
   > platform must alias the two at query time** until this contract and the
-  > platform repo are reconciled. Flagged for product-owner review.
+  > IndraTrace backend are reconciled.
   >
   > | Canonical (this doc, pre-drift) | Actually on the wire (pinned instrumentors) |
   > |---|---|
@@ -180,11 +181,16 @@ ingest gateway, and it is not configurable by a customer. The auth header is
 unchanged.
 
 - OTLP over HTTP (`/v1/traces`, `/v1/logs`, `/v1/metrics`) to the IndraTrace
-  **ingest gateway** — one constant, `config.DEFAULT_ENDPOINT`, currently
-  `http://localhost:8088` (the dev gateway; it becomes the production ingest
-  hostname at platform deployment arc phase 5). The pre-gateway collector port
-  `:4318` no longer terminates SDK traffic. There is no `endpoint` parameter:
-  the key routes the telemetry once it lands.
+  **ingest gateway** — one constant, `config.DEFAULT_ENDPOINT`, since 1.1 the
+  production hostname `https://ingest.indratrace.com`. The pre-gateway collector
+  port `:4318` no longer terminates SDK traffic. There is no `endpoint`
+  parameter: the key routes the telemetry once it lands. `INDRATRACE_ENDPOINT`
+  (env only) is the supported override for self-hosted deployments and
+  IndraTrace's dev environment — the gateway's base URL, no path.
+- Startup preflight (1.1): one authenticated `POST /v1/traces` with an empty
+  body, so the gateway's real 401/402 are what the SDK reads. Diagnoses are
+  built from the endpoint, the status and the gateway's RFC 7807 `title`/
+  `detail`; the key never appears in one.
 - Auth header: `x-indratrace-key: <api_key>`, on **all three** signal exporters.
   The header name is a fixed transport contract. The SDK parameter/env that
   supplies it is `api_key` / `INDRATRACE_API_KEY`; the key is **required**, so

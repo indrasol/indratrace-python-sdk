@@ -27,7 +27,8 @@ init_observability(api_key="it_live_...")
 That is the whole integration. **The API key is the only thing you configure** —
 it identifies your product, its environment and your workspace, all decided when
 you register the product and copy its key. There is nothing else to set, and no
-endpoint to point at.
+endpoint to point at. And if something *is* wrong — the key, the network, your
+billing — `init_observability()` tells you which, in one sentence, at startup.
 
 Two words to know up front:
 
@@ -490,6 +491,8 @@ Everything else is optional and keyword-only:
 | `capture_content` | `INDRATRACE_CAPTURE_CONTENT` | `false` (token counts only, no prompt/completion text) |
 | `log_level` | — | *none* — the SDK does not change your root logger |
 | `debug` | `INDRATRACE_DEBUG` | `false` (no diagnostics; see below) |
+| — | `INDRATRACE_ENDPOINT` | `https://ingest.indratrace.com` — the IndraTrace ingest gateway. **Override only for self-hosted deployments and IndraTrace's dev environment**; see below |
+| — | `INDRATRACE_PREFLIGHT` | `warn` — one startup check, logged, non-fatal. `strict` raises (CI); `0` skips it (air-gapped) |
 
 `service_name` is for one product with several deployables — an API and a
 worker, say. It labels the deployable; it does not name your product, which the
@@ -499,6 +502,67 @@ key already does.
 auto-instrumentation entirely (it's on by default, and an absent extra is already
 a no-op). Before 0.6.0 this argument was called `instrument_fastapi`; the old name
 still works and now gates all three frameworks.
+
+### `INDRATRACE_ENDPOINT` — where telemetry is sent
+
+By default the SDK ships to IndraTrace's production ingest gateway,
+`https://ingest.indratrace.com`. If you use the hosted service, you never set
+this — the key routes your telemetry once it lands, and there is nothing to point
+at.
+
+Two callers legitimately send somewhere else, and for them `INDRATRACE_ENDPOINT`
+is a supported, permanent setting:
+
+- a **self-hosted** IndraTrace deployment — set it to your gateway's base URL;
+- IndraTrace's own **dev environment** — the value is shown next to the key when
+  it is minted.
+
+```bash
+export INDRATRACE_ENDPOINT="https://ingest.example.internal"   # base URL, no path
+```
+
+It is an environment variable and not an `endpoint=` parameter on purpose: which
+gateway a deployment talks to is a property of the *deployment*, so it lives with
+the rest of the deployment's environment and the same code runs against the cloud
+in one place and a self-hosted gateway in another with no diff. (`endpoint=` was
+removed in 1.0; passing it still raises, and the message now points here.)
+
+**Whatever the endpoint, the host that runs your app needs outbound HTTPS on
+port 443 to it.** Plain cloud hosts and laptops have that; anything behind a
+corporate firewall, a cloud network security group or route table, or an egress
+proxy may not — and the symptom is silence, which is exactly what the next
+section is for.
+
+### What `init_observability()` checks at startup
+
+OpenTelemetry exports in the background and swallows failures by design, so a
+misconfigured service used to look like this: it runs, nothing arrives, nothing
+is logged. Since 1.1, `init_observability()` makes **one** short authenticated
+request to the gateway before returning (about two seconds at most), and if the
+answer is not 2xx it logs one paragraph naming the cause:
+
+| It says | It means |
+|---|---|
+| `…hostname 'x' does not resolve` | typo, or a resolver that cannot see it |
+| `…could not open a connection … outbound egress from this host is blocked` | a firewall, NSG, UDR or proxy is blocking outbound 443 to the gateway — fix the network, not the key. If you egress through a proxy, set `HTTPS_PROXY` |
+| `…nothing is listening at http://localhost:…` | `INDRATRACE_ENDPOINT` points at a local gateway that is not running (or, on 1.0, was never set) |
+| `…TLS verification failed` | an intercepting corporate proxy; point `REQUESTS_CA_BUNDLE` at your CA bundle — do not disable verification |
+| `…rejected the API key (HTTP 401)` | the key — check the running process's value for stray whitespace or a trailing newline from copy-paste, and that it was not revoked |
+| `…not an internal one and has no card on file (HTTP 402)` | your organisation has no card on file; usually a workspace created with a personal email. Save a card at Settings › Usage & billing |
+| `…answered HTTP 404/405 — not the IndraTrace ingest gateway` | the endpoint points at something else — use the gateway's base URL, no path |
+| `…cannot reach the collector behind it (HTTP 502)` / `…control plane is unavailable (HTTP 503)` | our side; nothing to fix, the SDK retries |
+
+It is **non-fatal**: the line is logged and your app keeps running — a
+misconfigured exporter must never take your service down. Two switches:
+
+- `INDRATRACE_PREFLIGHT=strict` — raise `IndraTraceConfigError` instead, so a CI
+  job that boots the service fails on a bad key or blocked egress rather than
+  shipping a service that drops its telemetry.
+- `INDRATRACE_PREFLIGHT=0` — skip the request entirely (air-gapped hosts).
+
+After startup, exports are watched too. Three consecutive failed batches log the
+same diagnosis once; then at most one line every five minutes; and when exports
+resume, one `recovered` line. The API key is never written to a log line.
 
 > **Upgrading from 0.6?** `product`, `env`, `endpoint` and `ingest_key` were
 > removed in 1.0 — the key decides all of them. Passing one raises an error that
@@ -534,7 +598,11 @@ production, which is the failure this replaced.
 ## Still waiting for your first span?
 
 You called `init_observability()`, your app is serving traffic, and the dashboard
-is empty. There are only three things it can be — work down the list.
+is empty. **Read the SDK's own startup line first** — since 1.1 it names the
+cause when the gateway could not be reached or refused the key (see
+[What `init_observability()` checks at startup](#what-init_observability-checks-at-startup)).
+If that line is absent or says nothing useful, there are only three things it
+can be — work down the list.
 
 **1. Is `INDRATRACE_API_KEY` actually set in the process that is running?**
 
@@ -597,10 +665,10 @@ turns silent drops into visible log lines — **without** changing behavior; you
 app still never sees an exception from the SDK.
 
 ```
-indratrace [INFO] indratrace initialized: service=my-app endpoint=http://localhost:8088
-indratrace [DEBUG] IndraTrace SDK v1.0.0 initialized
+indratrace [INFO] indratrace initialized: service=my-app endpoint=https://ingest.indratrace.com
+indratrace [DEBUG] IndraTrace SDK v1.1.0 initialized
 indratrace [DEBUG]   service=my-app version=1.4.2
-indratrace [DEBUG]   endpoint=http://localhost:8088 (traces=http://localhost:8088/v1/traces)
+indratrace [DEBUG]   endpoint=https://ingest.indratrace.com (traces=https://ingest.indratrace.com/v1/traces)
 indratrace [DEBUG]   api_key=set capture_content=off
 indratrace [DEBUG]   identity: product, deployment.environment and tenant.id are stamped by IndraTrace from your API key
 indratrace [DEBUG]   signals: traces + logs + metrics (OTLP/HTTP, batched)
