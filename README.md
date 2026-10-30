@@ -11,8 +11,8 @@
 </p>
 
 OpenTelemetry-native observability SDK for the IndraTrace platform — one-line
-instrumentation for web apps and AI agents: traces, logs, metrics, and
-model-call token usage.
+instrumentation for AI apps and agents: model calls with their token usage,
+agent runs, tools, and user feedback.
 
 ```bash
 pip install indratrace
@@ -36,9 +36,10 @@ Two words to know up front:
 - A **trace** is the full story of one request — its spans stacked on a
   timeline, so you can see where the time went and what called what.
 
-`init_observability()` ships traces, logs, and metrics; `trace_agent` /
-`trace_tool` wrap your agents and tools; and model spans carry exact,
-provider-reported token counts when the GenAI extras are installed. Token counts
+`init_observability()` ships the spans IndraTrace uses — and, since 1.2, only
+those ([What gets sent](#what-gets-sent)); `trace_agent` / `trace_tool` wrap
+your agents and tools; and model spans carry exact, provider-reported token
+counts when the GenAI extras are installed. Token counts
 are recorded raw — the SDK never computes cost; the platform derives it at query
 time.
 
@@ -52,12 +53,12 @@ from indratrace import init_observability, trace_agent, trace_tool
 # Once, at app startup. The key is the whole configuration.
 init_observability(api_key="it_live_...")
 
-app = FastAPI()  # every HTTP request becomes a span, automatically
+app = FastAPI()  # HTTP requests are not sent by default (1.2) — AI spans are
 
 
 @trace_tool  # a span per tool call
 async def risk_score(vendor: str) -> int:
-    logging.getLogger(__name__).info("scoring %s", vendor)  # ships with trace context
+    logging.getLogger(__name__).info("scoring %s", vendor)  # stays local unless logs=True
     return len(vendor)
 
 
@@ -67,26 +68,46 @@ async def run(query: str) -> int:
 ```
 
 The `import logging` above is just Python's built-in logging — nothing
-IndraTrace-specific, and not required. Whatever your app already logs ships
-automatically (see [Configuration](#configuration)); the line is there to show a
-log call picking up its span's trace context.
+IndraTrace-specific, and not required. Log records are not sent by default; pass
+`logs=True` and every INFO+ record ships carrying its span's trace context (see
+[Configuration](#configuration)).
 
 Both decorators work on sync and async functions. They are transparent: a tool
 that raises gets its span marked `ERROR` with the exception recorded, and the
 exception then propagates to your code unchanged.
 
+## What gets sent
+
+**Since 1.2, only what IndraTrace uses.** The platform keeps AI signals and
+discards the rest, so the SDK no longer spends your bandwidth on the rest:
+
+| Sent by default (`ai_only=True`) | Not sent by default | Turn it back on |
+|---|---|---|
+| Model-call spans with token counts (GenAI extras, `record_llm_usage`) | HTTP server spans (FastAPI / Django / Flask) | `instrument_http=True` |
+| Agent / turn / tool / step spans (`@trace_agent`, `@trace_tool`, `@trace_step`, Claude Agent SDK, MCP tools) | Log records (stdlib `logging`, loguru) | `logs=True` |
+| Feedback spans (`record_feedback`) | Metrics | `ai_only=False` |
+
+`ai_only=False` restores everything 1.1 sent, exactly:
+
+```python
+init_observability(api_key="it_live_...", ai_only=False)
+```
+
+Turning HTTP spans on while `ai_only` is on logs one warning at startup: IndraTrace
+ignores those spans unless your workspace has been set to keep all signals.
+
+**A model call inside a web request is its own trace.** With HTTP spans off there
+is no request span above it, so the model span is the root of its trace — its
+model, tokens and cost read exactly as before. Wrap the work in `@trace_agent` if
+you want one run to group several calls.
+
 ## What you get, by framework
 
-**If your app uses Python's standard logging, your logs are already in
-IndraTrace — don't use `print()`.** That is true with no extra installed and no
-configuration: the one `init_observability()` call bridges `logging` into the
-pipeline, and every record emitted inside a span carries that span's trace
-context. As of 0.6.0 the same is true of [Loguru](https://github.com/Delgan/loguru).
+Model spans and agent spans come from the extras in the table below. HTTP
+server spans and logs are opt-ins since 1.2 ([What gets sent](#what-gets-sent));
+the table shows what you get once you turn them on.
 
-Everything else — HTTP server spans, model spans, agent spans — comes from the
-extras in the table below.
-
-| Your app uses | Logs | HTTP server spans | Model spans (tokens) | Agent spans |
+| Your app uses | Logs (`logs=True`) | HTTP server spans (`instrument_http=True`) | Model spans (tokens) | Agent spans |
 |---|---|---|---|---|
 | **`logging`** (stdlib) | ✅ automatic | — | — | — |
 | **Loguru** | ✅ automatic *(0.6.0+)* | — | — | — |
@@ -123,16 +144,19 @@ integration above.
 
 ## Tracing a regular REST API
 
-You don't need to be building an AI agent. For a plain FastAPI service, the one
-init line is the whole setup — every endpoint is reported as a span, with its
-status and duration, no per-route code:
+> **1.2:** HTTP spans are off by default and IndraTrace ignores them unless your
+> workspace keeps all signals ([What gets sent](#what-gets-sent)). This section
+> applies when you pass `ai_only=False` (or `instrument_http=True`).
+
+For a plain FastAPI service, one init line is the whole setup — every endpoint
+is reported as a span, with its status and duration, no per-route code:
 
 ```python
 from fastapi import FastAPI
 
 from indratrace import init_observability
 
-init_observability(api_key="it_live_...")
+init_observability(api_key="it_live_...", ai_only=False)
 
 app = FastAPI()
 
@@ -174,6 +198,8 @@ pip install "indratrace[fastapi,anthropic,openai,gemini,bedrock]"
 pip install "indratrace[django]"
 ```
 
+*HTTP spans are an opt-in since 1.2 — the examples below pass `ai_only=False`.*
+
 Every request becomes a server span, with no per-view code. **Where you call
 `init_observability()` matters.** The instrumentation works by adding middleware,
 and Django reads its middleware list once, when it builds the application object
@@ -191,7 +217,7 @@ from indratrace import init_observability
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "myproject.settings")
 
-init_observability(api_key="it_live_...")            # BEFORE ↓
+init_observability(api_key="it_live_...", ai_only=False)  # BEFORE ↓
 
 application = get_wsgi_application()
 ```
@@ -214,6 +240,8 @@ spans are missing, check this first.
 pip install "indratrace[flask]"
 ```
 
+*HTTP spans are an opt-in since 1.2 — the example below passes `ai_only=False`.*
+
 Every request becomes a server span. **One caveat, and it bites the most common
 import style.** The instrumentation works by replacing the `flask.Flask` class,
 so an app built from a `Flask` name that was imported *before* `init_observability()`
@@ -225,7 +253,7 @@ from flask import Flask
 
 from indratrace import init_observability, instrument_flask_app
 
-init_observability(api_key="it_live_...")
+init_observability(api_key="it_live_...", ai_only=False)
 
 app = Flask(__name__)
 instrument_flask_app(app)          # ← now every request is a span
@@ -244,16 +272,17 @@ when in doubt, keep it.)
 
 ## Loguru
 
-Nothing to install and nothing to configure — as of **0.6.0**, if
-[loguru](https://github.com/Delgan/loguru) is importable, `init_observability()`
-bridges it automatically:
+Nothing to install — as of **0.6.0**, if
+[loguru](https://github.com/Delgan/loguru) is importable and the log bridge is
+on (`logs=True`, or `ai_only=False`; off by default since 1.2),
+`init_observability()` bridges it automatically:
 
 ```python
 from loguru import logger
 
 from indratrace import init_observability
 
-init_observability(api_key="it_live_...")
+init_observability(api_key="it_live_...", logs=True)
 
 logger.info("this ships to IndraTrace")          # INFO and above
 logger.exception("so does this, with its stack trace")
@@ -277,7 +306,7 @@ from loguru import logger
 
 from indratrace import bridge_loguru, init_observability
 
-init_observability(api_key="it_live_...")
+init_observability(api_key="it_live_...", logs=True)
 
 logger.remove()                    # your own setup — drops our sink too
 logger.add("app.log", level="INFO")
@@ -489,7 +518,10 @@ Everything else is optional and keyword-only:
 | `service_name` | — | whatever OpenTelemetry resolves (`OTEL_SERVICE_NAME`, else `unknown_service`) |
 | `service_version` | — | `0.0.0` |
 | `capture_content` | `INDRATRACE_CAPTURE_CONTENT` | `false` (token counts only, no prompt/completion text) |
-| `log_level` | — | *none* — the SDK does not change your root logger |
+| `ai_only` | — | `true` — send only AI signals; `false` restores 1.1 ([What gets sent](#what-gets-sent)) |
+| `logs` | — | follows `ai_only` (off) — `true` bridges stdlib `logging` and loguru |
+| `instrument_http` | — | follows `ai_only` (off) — `true` instruments FastAPI / Django / Flask |
+| `log_level` | — | *none* — the SDK does not change your root logger (applies only when `logs` is on) |
 | `debug` | `INDRATRACE_DEBUG` | `false` (no diagnostics; see below) |
 | — | `INDRATRACE_ENDPOINT` | `https://ingest.indratrace.com` — the IndraTrace ingest gateway. **Override only for self-hosted deployments and IndraTrace's dev environment**; see below |
 | — | `INDRATRACE_PREFLIGHT` | `warn` — one startup check, logged, non-fatal. `strict` raises (CI); `0` skips it (air-gapped) |
@@ -498,10 +530,10 @@ Everything else is optional and keyword-only:
 worker, say. It labels the deployable; it does not name your product, which the
 key already does.
 
-`init_observability()` also takes `instrument_http=False` to turn off web-framework
-auto-instrumentation entirely (it's on by default, and an absent extra is already
-a no-op). Before 0.6.0 this argument was called `instrument_fastapi`; the old name
-still works and now gates all three frameworks.
+`instrument_http` follows `ai_only` unless you pass it: off by default since 1.2,
+on with `ai_only=False`, and `instrument_http=False` turns it off even then (an
+absent extra is already a no-op). Before 0.6.0 this argument was called
+`instrument_fastapi`; the old name still works and gates all three frameworks.
 
 ### `INDRATRACE_ENDPOINT` — where telemetry is sent
 
@@ -666,16 +698,13 @@ app still never sees an exception from the SDK.
 
 ```
 indratrace [INFO] indratrace initialized: service=my-app endpoint=https://ingest.indratrace.com
-indratrace [DEBUG] IndraTrace SDK v1.1.0 initialized
+indratrace [DEBUG] IndraTrace SDK v1.2.0 initialized
 indratrace [DEBUG]   service=my-app version=1.4.2
 indratrace [DEBUG]   endpoint=https://ingest.indratrace.com (traces=https://ingest.indratrace.com/v1/traces)
 indratrace [DEBUG]   api_key=set capture_content=off
 indratrace [DEBUG]   identity: product, deployment.environment and tenant.id are stamped by IndraTrace from your API key
-indratrace [DEBUG]   signals: traces + logs + metrics (OTLP/HTTP, batched)
-indratrace [DEBUG]   http[fastapi]: skipped (extra not installed)
-indratrace [DEBUG]   http[django]: enabled
-indratrace [DEBUG]   http[flask]: skipped (extra not installed)
-indratrace [DEBUG]   loguru: enabled
+indratrace [DEBUG]   signals: traces (OTLP/HTTP, batched)
+indratrace [DEBUG]   loguru: skipped (logs off; pass logs=True)
 indratrace [DEBUG]   genai[anthropic]: enabled
 indratrace [DEBUG]   claude-agent-sdk: skipped (extra not installed)
 indratrace [WARNING] indratrace: traces export FAILED (FAILURE) — HTTP 401: the gateway rejected your API key. Check the value of INDRATRACE_API_KEY in the process that is running; keys are shown once when the product is created.
@@ -689,7 +718,9 @@ Read it top to bottom:
 - Each **integration** line says `enabled` or `skipped (reason)`. `skipped (extra
   not installed)` means you need the extra, e.g. `pip install "indratrace[anthropic]"`.
   The `http[…]`, `loguru`, `genai[…]`, and `claude-agent-sdk` lines cover every
-  row of the [support matrix](#what-you-get-by-framework).
+  row of the [support matrix](#what-you-get-by-framework). The `signals` line
+  lists what is wired: `traces` by default, `traces + logs + metrics` with
+  `ai_only=False`; the `http[…]` lines appear only when HTTP spans are on.
 - An **`export FAILED`** line means the SDK built fine but IndraTrace didn't
   accept the data. It carries the HTTP status the gateway answered with: `401`
   is a rejected key (the sample above), any other status means the gateway was

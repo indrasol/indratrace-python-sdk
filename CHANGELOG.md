@@ -8,6 +8,46 @@ PyPI versions are immutable — fixes ship as new versions, never a re-upload.
 
 ## [Unreleased]
 
+## [1.2.0] — Unreleased
+
+**AI-only by default.** New installs send only what IndraTrace uses — model
+calls, agents, tools and feedback — so your app stops paying bandwidth for HTTP
+spans, log records and metrics the platform discards. Set `ai_only=False` for
+1.1 behaviour.
+
+### Changed
+
+- **AI-only by default; set `ai_only=False` for 1.1 behaviour** (ADR 0010).
+  `init_observability()` now defaults to sending traces only: GenAI model spans,
+  `trace_agent` / `trace_tool` / `trace_step` spans, Claude Agent SDK and MCP
+  tool spans, and `record_feedback` spans. Off by default: HTTP server spans
+  (FastAPI / Django / Flask), the stdlib `logging` and `loguru` log bridge, and
+  metrics. A signal that is off is not built at all — no provider, no exporter,
+  no background thread.
+- `instrument_http` now defaults to `None` ("follow `ai_only`"). An explicit
+  `instrument_http=True` (or `instrument_fastapi=True`) still instruments, and
+  logs one warning at init that the platform ignores HTTP spans unless your
+  workspace keeps all signals.
+- With HTTP spans off, a model call made inside a web request is now the root of
+  its own trace instead of a child of the request span. Its token usage and
+  model are unchanged; `docs/conventions.md` § Run roots documents it.
+- The `debug=True` banner's `signals:` line lists only the signals wired.
+
+### Added
+
+- `ai_only: bool = True` on `init_observability()`.
+- `logs: bool | None = None` on `init_observability()` — `logs=True` turns the
+  stdlib/loguru bridge on without restoring HTTP spans or metrics.
+
+### Upgrading from 1.1
+
+Nothing to do if you only use IndraTrace for AI calls and agents. To keep
+exactly what 1.1 sent:
+
+```python
+init_observability(api_key="it_live_...", ai_only=False)
+```
+
 ## [1.1.0] — 2026-09-28
 
 **The SDK tells you what is wrong, and `INDRATRACE_API_KEY` alone is a complete

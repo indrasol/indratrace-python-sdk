@@ -1,7 +1,8 @@
 """init_observability(): provider + exporter + auto-instrumentation wiring.
 
-All three signals — traces, logs, metrics (ADR 0006). Hard rules: idempotent,
-fail-silent, no policy (see docs/architecture.md).
+AI-only by default since 1.2 (ADR 0010): model, agent, tool and feedback spans.
+`ai_only=False` restores all three signals — traces, logs, metrics (ADR 0006).
+Hard rules: idempotent, fail-silent, no policy (see docs/architecture.md).
 """
 
 from __future__ import annotations
@@ -64,6 +65,14 @@ LOG_EXPORT_LEVEL = logging.INFO
 #: export path, so exporting them risks a loop that feeds itself: a failed
 #: export logs an error, which becomes a record to export, which fails...
 _EXPORT_EXCLUDED_LOGGERS = frozenset({"indratrace", "opentelemetry"})
+
+#: Logged once, at init, when HTTP auto-instrumentation is asked for while
+#: `ai_only` is on: the spans are sent, and the platform does not keep them.
+HTTP_IGNORED_WARNING = (
+    "indratrace: instrument_http=True sends HTTP server spans, which IndraTrace "
+    "ignores unless your workspace keeps all signals. Your AI spans do not need "
+    "them; pass ai_only=False if you want 1.1's full signal set anyway."
+)
 
 # Module state guarding idempotency. `init_observability` is safe to call from
 # an import-time module that gets imported twice, or from a reloading worker.
@@ -501,6 +510,7 @@ def _banner_lines(
     genai_statuses: list[tuple[str, bool, str]],
     agent_sdk_status: tuple[bool, str] | None,
     capture_content: bool,
+    signals: str = "traces + logs + metrics",
 ) -> list[str]:
     """The `debug=True` startup banner, one list entry per line.
 
@@ -526,7 +536,7 @@ def _banner_lines(
         f"  api_key=set capture_content={'on' if capture_content else 'off'}",
         "  identity: product, deployment.environment and tenant.id are stamped "
         "by IndraTrace from your API key",
-        "  signals: traces + logs + metrics (OTLP/HTTP, batched)",
+        f"  signals: {signals} (OTLP/HTTP, batched)",
     ]
     for framework, enabled, reason in http_statuses:
         lines.append(f"  http[{framework}]: {status(enabled, reason)}")
@@ -629,11 +639,13 @@ def init_observability(
     *,
     service_name: str | None = None,
     service_version: str | None = None,
-    instrument_http: bool = True,
+    instrument_http: bool | None = None,
     instrument_fastapi: bool | None = None,
     log_level: int | str | None = None,
     capture_content: bool | None = None,
     debug: bool | None = None,
+    ai_only: bool = True,
+    logs: bool | None = None,
     **removed: Any,
 ) -> None:
     """Wire OpenTelemetry to ship telemetry to IndraTrace. Call once, at startup.
@@ -643,10 +655,14 @@ def init_observability(
         from indratrace import init_observability
         init_observability(api_key="it_live_...")
 
-    Sets up all three signals: traces, logs (stdlib `logging` — and `loguru` —
-    bridged into OTel, carrying trace context), and metrics. Everything exports
-    over OTLP/HTTP from background batchers, authenticated with the
-    `x-indratrace-key` header.
+    **AI-only by default** (1.2, ADR 0010): it sends what IndraTrace uses —
+    model-call spans from the GenAI instrumentors, the agent / turn / tool /
+    step spans of `trace_agent`, `trace_tool` and the Claude Agent SDK, and
+    feedback. HTTP server spans, the log bridge and metrics are off, because the
+    platform does not keep them. `ai_only=False` restores 1.1 exactly: all three
+    signals — traces, logs (stdlib `logging` and `loguru` bridged into OTel,
+    carrying trace context), and metrics. Everything exports over OTLP/HTTP from
+    background batchers, authenticated with the `x-indratrace-key` header.
 
     **The key decides identity** (ADR 0009). Your product, its environment and
     your tenant come from the key, stamped by IndraTrace's ingest gateway when
@@ -693,8 +709,11 @@ def init_observability(
         service_version: Your app's own version string, e.g. `"1.4.2"`.
         instrument_http: Whether to auto-instrument the web frameworks whose
             extras are installed — FastAPI, Django, and Flask — so every HTTP
-            request becomes a server span. On by default; an absent extra is a
-            silent skip, so this costs nothing if your app is not a web app. Two
+            request becomes a server span. Leave it `None` (the default) and it
+            follows `ai_only`: off under `ai_only=True`, on under `ai_only=False`.
+            Passing `True` while `ai_only` is on still works, and logs one
+            warning that the platform ignores those spans unless your workspace
+            keeps all signals. An absent extra is a silent skip. Two
             placement caveats that produce *silent* zero-span outcomes: **Django**
             works by inserting middleware into `settings.MIDDLEWARE`, so init must
             run before `get_wsgi_application()` (top of `wsgi.py`/`asgi.py`); and
@@ -711,7 +730,8 @@ def init_observability(
             already passing your root logger's level still ship. Pass e.g.
             `"INFO"` if your app never configured logging and would otherwise
             emit nothing below WARNING. Note this also affects your app's own
-            console and file handlers — it is the stdlib root level.
+            console and file handlers — it is the stdlib root level. Applies
+            only when the log bridge is on (`logs`).
         capture_content: Whether to record prompt and completion **text** on
             GenAI model spans. Off by default because prompts carry customer
             data — the typical use is on in dev/staging, off in prod. Leave it
@@ -728,6 +748,12 @@ def init_observability(
             become *audible*. Leave it `None` (the default) to resolve from
             `INDRATRACE_DEBUG` (truthy: `1/true/yes/on`), else off. Use it when
             nothing is showing up in your dashboard and you want to see why.
+        ai_only: Send only the signals IndraTrace uses (the default). `False`
+            restores 1.1's behaviour exactly: HTTP auto-instrumentation on, the
+            stdlib/loguru log bridge on, metrics on.
+        logs: Bridge stdlib `logging` and `loguru` records into the logs signal.
+            Leave it `None` (the default) and it follows `ai_only`: off under
+            `ai_only=True`, on under `ai_only=False`.
 
     Raises:
         IndraTraceConfigError: no API key was given (and `INDRATRACE_API_KEY` is
@@ -763,8 +789,15 @@ def init_observability(
     # both are passed. No DeprecationWarning: unlike `ingest_key`, the old name
     # was almost always passed as `False` by tests/scripts to *disable* HTTP
     # instrumentation, and warning at them buys the user nothing.
-    if instrument_fastapi is not None and instrument_http:
+    if instrument_fastapi is not None and instrument_http is not False:
         instrument_http = instrument_fastapi
+
+    # ADR 0010: a `None` follows `ai_only`, so `ai_only=False` with nothing else
+    # passed is 1.1's call exactly. Metrics have no switch of their own: under
+    # `ai_only` there are none worth sending (no HTTP spans, no custom metrics).
+    http_on = (not ai_only) if instrument_http is None else instrument_http
+    logs_on = (not ai_only) if logs is None else logs
+    metrics_on = not ai_only
 
     # Resolve config *outside* the fail-silent block, and before any console
     # wiring: a missing key must reach the caller (that is the whole of §2), and
@@ -784,6 +817,11 @@ def init_observability(
     if plaintext_warning:
         logger.warning("indratrace: %s", plaintext_warning)
 
+    # Once per init: the caller asked for HTTP spans by name, so do as asked,
+    # but say that they cost bandwidth for nothing on a default workspace.
+    if ai_only and http_on:
+        logger.warning(HTTP_IGNORED_WARNING)
+
     # One short request to the gateway, and a named diagnosis if it did not
     # come back 2xx. Before the providers exist so that `strict` mode raises
     # with nothing built and nothing to unwind. Non-fatal by default.
@@ -796,6 +834,10 @@ def init_observability(
     # part-way through doesn't strand background exporter threads owned by
     # nothing.
     built: list[_Shutdownable] = []
+    logger_provider: LoggerProvider | None = None
+    meter_provider: MeterProvider | None = None
+    log_handler: LoggingHandler | None = None
+    root_level_before: int | None = None
     try:
         # One Resource for all three providers. Built once, not per provider:
         # `Resource.create` runs the OTel detectors, and a detector that varies
@@ -807,20 +849,33 @@ def init_observability(
         health = ExportHealth(cfg)
         tracer_provider = _build_tracer_provider(cfg, resource, health, debug=debug_on)
         built.append(tracer_provider)
-        logger_provider = _build_logger_provider(cfg, resource, health, debug=debug_on)
-        built.append(logger_provider)
-        meter_provider = _build_meter_provider(cfg, resource, health, debug=debug_on)
-        built.append(meter_provider)
+        # Not built at all when off, rather than built and left idle: an unset
+        # global provider is OTel's no-op, so nothing is batched or exported.
+        if logs_on:
+            logger_provider = _build_logger_provider(
+                cfg, resource, health, debug=debug_on
+            )
+            built.append(logger_provider)
+        if metrics_on:
+            meter_provider = _build_meter_provider(
+                cfg, resource, health, debug=debug_on
+            )
+            built.append(meter_provider)
 
         # Everything that can fail happens *before* the globals are published.
         # `set_*_provider` is once-per-process and cannot be taken back, so
         # publishing first would leave the process pinned to providers we then
         # shut down on the failure path — and a retry could never replace them.
-        log_handler, root_level_before = _attach_log_handler(logger_provider, log_level)
+        if logger_provider is not None:
+            log_handler, root_level_before = _attach_log_handler(
+                logger_provider, log_level
+            )
 
         trace.set_tracer_provider(tracer_provider)
-        _logs.set_logger_provider(logger_provider)
-        metrics.set_meter_provider(meter_provider)
+        if logger_provider is not None:
+            _logs.set_logger_provider(logger_provider)
+        if meter_provider is not None:
+            metrics.set_meter_provider(meter_provider)
 
         # Past this point the globals are frozen, so a failure here must not
         # unwind the signals: HTTP instrumentation is a bonus, not a
@@ -832,7 +887,7 @@ def init_observability(
         # chain is built and Flask's misses pre-imported `Flask` names — both
         # documented there and in the README, neither detectable from here.
         http_statuses: list[tuple[str, bool, str]] = []
-        if instrument_http:
+        if http_on:
             try:
                 http_statuses = enable_http_instrumentation(tracer_provider)
             except Exception:  # noqa: BLE001 — HTTP spans are optional
@@ -847,15 +902,16 @@ def init_observability(
         # all (loguru bypasses stdlib logging entirely, so without this it emits
         # nothing). Absent loguru is a silent skip inside; fail-silent, and
         # idempotent across re-init.
-        loguru_status: tuple[bool, str] = (False, "loguru not installed")
-        try:
-            loguru_status = enable_loguru_bridge(log_handler)
-        except Exception as exc:  # noqa: BLE001 — the log bridge is a bonus
-            loguru_status = (False, f"bridge failed: {exc}")
-            logger.warning(
-                "indratrace: loguru bridge failed; other signals are unaffected",
-                exc_info=True,
-            )
+        loguru_status: tuple[bool, str] = (False, "logs off; pass logs=True")
+        if log_handler is not None:
+            try:
+                loguru_status = enable_loguru_bridge(log_handler)
+            except Exception as exc:  # noqa: BLE001 — the log bridge is a bonus
+                loguru_status = (False, f"bridge failed: {exc}")
+                logger.warning(
+                    "indratrace: loguru bridge failed; other signals are unaffected",
+                    exc_info=True,
+                )
 
         # GenAI instrumentors, handed OUR provider (not the frozen global) so
         # model spans nest under the same trace as the agent/tool spans. Also a
@@ -914,6 +970,15 @@ def init_observability(
                 genai_statuses,
                 agent_sdk_status,
                 resolve_capture_content(capture_content),
+                signals=" + ".join(
+                    name
+                    for name, on in (
+                        ("traces", True),
+                        ("logs", logs_on),
+                        ("metrics", metrics_on),
+                    )
+                    if on
+                ),
             ):
                 logger.debug(line)
             _debug_connectivity_probe(tracer_provider)

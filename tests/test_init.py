@@ -161,7 +161,7 @@ class TestResourceOnSpans:
         """`INDRATRACE_API_KEY` is the one supported env var, and it works."""
         monkeypatch.setenv(ENV_API_KEY, "it_test_from_env")
 
-        init_observability(instrument_fastapi=False)
+        init_observability(instrument_fastapi=False, ai_only=False)
         _emit_and_flush_all_signals()
 
         assert _keys_by_path(wire) == dict.fromkeys(
@@ -199,7 +199,9 @@ class TestApiKeyIsRequired:
     def test_a_key_of_any_shape_is_still_sent(self, wire: list[_Capture]) -> None:
         """The SDK checks presence, never format — the gateway is the one
         authority on whether a key is valid."""
-        init_observability("not-an-it-prefixed-key", instrument_fastapi=False)
+        init_observability(
+            "not-an-it-prefixed-key", instrument_fastapi=False, ai_only=False
+        )
         _emit_and_flush_all_signals()
 
         assert _keys_by_path(wire) == dict.fromkeys(
@@ -380,7 +382,9 @@ class TestAuthHeaderOnEveryExporter:
     """
 
     def test_all_three_exporters_carry_the_key(self, wire: list[_Capture]) -> None:
-        init_observability(api_key="it_test_secret", instrument_fastapi=False)
+        init_observability(
+            api_key="it_test_secret", instrument_fastapi=False, ai_only=False
+        )
         _emit_and_flush_all_signals()
 
         # Every request, on every signal, carried exactly this key.
@@ -504,7 +508,7 @@ class TestFailSilent:
 
         monkeypatch.setattr(builtins, "__import__", no_fastapi_instrumentation)
 
-        init_observability(api_key="it_test_demo", instrument_fastapi=True)
+        init_observability(api_key="it_test_demo", ai_only=False)
 
         assert _get_provider() is not None, "init must still succeed"
         assert sdk_warnings(sdk_log) == []
@@ -516,8 +520,14 @@ class TestFastApiInstrumentation:
         module = pytest.importorskip("opentelemetry.instrumentation.fastapi")
         return module.FastAPIInstrumentor().is_instrumented_by_opentelemetry
 
-    def test_enabled_by_default(self) -> None:
+    def test_off_by_default(self) -> None:
+        """1.2 (ADR 0010): the platform does not keep HTTP spans, so the SDK
+        stops sending them unless asked."""
         init_observability(api_key="it_test_demo")
+        assert not self._is_instrumented()
+
+    def test_enabled_by_default_under_ai_only_false(self) -> None:
+        init_observability(api_key="it_test_demo", ai_only=False)
         assert self._is_instrumented()
 
     def test_can_be_opted_out(self) -> None:

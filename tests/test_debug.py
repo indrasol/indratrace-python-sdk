@@ -234,6 +234,7 @@ class TestBannerContent:
         init_observability(
             api_key="it_test_probe",
             debug=True,
+            ai_only=False,
         )
         text = "\n".join(console_lines(sdk_log))
 

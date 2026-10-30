@@ -64,7 +64,7 @@ flask = pytest.importorskip("flask", reason="the flask extra needs flask")
 
 class TestFlask:
     def test_a_request_becomes_a_server_span(self) -> None:
-        init_observability(api_key="it_test_flask_demo")
+        init_observability(api_key="it_test_flask_demo", ai_only=False)
         exporter = capture_spans()
 
         # Looked up on the module at call time, so it picks up the instrumented
@@ -83,7 +83,7 @@ class TestFlask:
         assert spans[0].attributes["http.route"] == "/orders/<order_id>"
 
     def test_span_records_the_status_code(self) -> None:
-        init_observability(api_key="it_test_flask_demo")
+        init_observability(api_key="it_test_flask_demo", ai_only=False)
         exporter = capture_spans()
 
         app = flask.Flask("demo")
@@ -110,7 +110,7 @@ class TestFlask:
         """
         preimported_flask = flask.Flask  # captured before init, by value
 
-        init_observability(api_key="it_test_flask_demo")
+        init_observability(api_key="it_test_flask_demo", ai_only=False)
         exporter = capture_spans()
 
         app = preimported_flask("trapped")
@@ -129,7 +129,7 @@ class TestFlask:
     def test_instrument_flask_app_rescues_a_preimported_app(self) -> None:
         preimported_flask = flask.Flask
 
-        init_observability(api_key="it_test_flask_demo")
+        init_observability(api_key="it_test_flask_demo", ai_only=False)
         exporter = capture_spans()
 
         app = preimported_flask("rescued")
@@ -147,7 +147,7 @@ class TestFlask:
         assert spans[0].attributes["http.route"] == "/rescued"
 
     def test_instrument_flask_app_is_safe_to_call_twice(self) -> None:
-        init_observability(api_key="it_test_flask_demo")
+        init_observability(api_key="it_test_flask_demo", ai_only=False)
         exporter = capture_spans()
 
         app = flask.Flask("twice")
@@ -165,7 +165,7 @@ class TestFlask:
 
     def test_instrument_flask_app_never_raises(self) -> None:
         """Fail-silent (ADR 0003): a missing span must not take the app down."""
-        init_observability(api_key="it_test_flask_demo")
+        init_observability(api_key="it_test_flask_demo", ai_only=False)
 
         assert instrument_flask_app(object()) is False  # not a Flask app at all
 
@@ -227,7 +227,7 @@ class TestDjango:
         """Django's whole instrumentation mechanism, in one assertion."""
         assert django_app.MIDDLEWARE == []
 
-        init_observability(api_key="it_test_django_demo")
+        init_observability(api_key="it_test_django_demo", ai_only=False)
 
         assert any(
             "opentelemetry" in middleware for middleware in django_app.MIDDLEWARE
@@ -237,7 +237,7 @@ class TestDjango:
         from django.test import Client
 
         # init BEFORE the request, so the middleware is in the chain Django builds.
-        init_observability(api_key="it_test_django_demo")
+        init_observability(api_key="it_test_django_demo", ai_only=False)
         exporter = capture_spans()
 
         response = Client().get("/hello/")
@@ -250,7 +250,7 @@ class TestDjango:
     def test_span_records_the_status_code(self, django_app: Any) -> None:
         from django.test import Client
 
-        init_observability(api_key="it_test_django_demo")
+        init_observability(api_key="it_test_django_demo", ai_only=False)
         exporter = capture_spans()
 
         Client().get("/hello/")
@@ -263,7 +263,7 @@ class TestDjango:
 
     def test_reset_removes_the_middleware(self, django_app: Any) -> None:
         """Otherwise the middleware leaks into every later test in the session."""
-        init_observability(api_key="it_test_django_demo")
+        init_observability(api_key="it_test_django_demo", ai_only=False)
         assert django_app.MIDDLEWARE != []
 
         _reset_for_tests()
@@ -357,7 +357,9 @@ class TestWiring:
         """A second init in a process must not send spans to a stale provider."""
         init_observability(api_key="it_test_first", instrument_http=False)
         _reset_for_tests()
-        init_observability(api_key="it_test_second")  # the global is already frozen
+        init_observability(
+            api_key="it_test_second", ai_only=False
+        )  # the global is already frozen
         exporter = capture_spans()
 
         app = flask.Flask("second")

@@ -135,7 +135,9 @@ Cost is **never** recorded even though `ResultMessage.total_cost_usd` is offered
 raw counts only (ADR 0005). `agent.framework` selects exactly this feature's
 spans at query time.
 
-- **HTTP spans**: whatever the framework's official OTel instrumentor emits —
+- **HTTP spans** (off by default since 1.2, ADR 0010 — sent only with
+  `instrument_http=True` or `ai_only=False`): whatever the framework's official
+  OTel instrumentor emits —
   `FastAPIInstrumentor`, `DjangoInstrumentor`, or `FlaskInstrumentor` (v0.6.0),
   each following the OTel HTTP semconv. **Consume, don't fork**: the SDK adds no
   attributes of its own to these spans and renames nothing, so the platform reads
@@ -154,6 +156,33 @@ spans at query time.
   the span is still emitted with `feedback.trace_id` absent (the score is never
   silently dropped). The platform joins the feedback row to the original trace
   on `feedback.trace_id`.
+
+### What is sent (1.2, ADR 0010)
+
+`init_observability()` defaults to `ai_only=True`, which sends **traces only**,
+and of those only the spans above that are not HTTP spans: model spans, agent /
+turn / tool / step spans, and feedback spans. The logs signal (stdlib `logging`
+and `loguru` bridge) is off unless `logs=True`; the metrics signal is off. HTTP
+server spans are off unless `instrument_http=True`. `ai_only=False` restores the
+1.1 set exactly — HTTP spans, logs and metrics on. No attribute name changes in
+either mode.
+
+### Run roots
+
+A span's parent is whatever span was current when it started. With HTTP spans
+off, nothing wraps a request, so:
+
+- a **model span** started outside any agent/tool span is its trace's **root**.
+  It is read on its own, by its `gen_ai.*` attributes (`gen_ai.usage.input_tokens`,
+  `gen_ai.usage.output_tokens`, `gen_ai.request.model`, …): a consumer must not
+  require a parent to price or count it.
+- a **tool / step span** started outside any agent span is its trace's root,
+  identified by `indratrace.span.kind`. A consumer treats an agent-family span
+  with no parent as the start of a run, exactly as it treats an `agent` span.
+- `trace_agent` and the Claude Agent SDK's agent-run span are unchanged: they
+  are the roots of their runs in both modes.
+
+Pinned by `tests/test_ai_only.py::TestLlmSpanAsRunRoot`.
 
 ## Session / user context (span attributes)
 
@@ -191,7 +220,9 @@ unchanged.
   body, so the gateway's real 401/402 are what the SDK reads. Diagnoses are
   built from the endpoint, the status and the gateway's RFC 7807 `title`/
   `detail`; the key never appears in one.
-- Auth header: `x-indratrace-key: <api_key>`, on **all three** signal exporters.
+- Auth header: `x-indratrace-key: <api_key>`, on **every** signal exporter the
+  SDK builds (traces only under the 1.2 default; all three with `ai_only=False`
+  or the matching opt-ins).
   The header name is a fixed transport contract. The SDK parameter/env that
   supplies it is `api_key` / `INDRATRACE_API_KEY`; the key is **required**, so
   there is no headerless export. (`ingest_key` / `INDRATRACE_KEY` were removed

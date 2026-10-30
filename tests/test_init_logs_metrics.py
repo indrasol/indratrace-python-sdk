@@ -92,7 +92,9 @@ class TestEndpoints:
 
 class TestProvidersAreBuilt:
     def test_all_three_signals_wired(self) -> None:
-        init_observability(api_key="it_test_demo", instrument_fastapi=False)
+        init_observability(
+            ai_only=False, api_key="it_test_demo", instrument_fastapi=False
+        )
 
         assert _get_provider() is not None
         assert _get_logger_provider() is not None
@@ -108,7 +110,9 @@ class TestLogBridge:
     """
 
     def test_stdlib_log_ships_as_a_record(self) -> None:
-        init_observability(api_key="it_test_demo", instrument_fastapi=False)
+        init_observability(
+            ai_only=False, api_key="it_test_demo", instrument_fastapi=False
+        )
         exporter = capture_logs()
 
         logging.getLogger("some.product.module").info("hello from the product")
@@ -118,7 +122,9 @@ class TestLogBridge:
 
     def test_log_inside_a_span_carries_trace_context(self) -> None:
         """The whole point of the bridge: a log line links back to its trace."""
-        init_observability(api_key="it_test_demo", instrument_fastapi=False)
+        init_observability(
+            ai_only=False, api_key="it_test_demo", instrument_fastapi=False
+        )
         exporter = capture_logs()
 
         seen: dict[str, int] = {}
@@ -139,7 +145,9 @@ class TestLogBridge:
         assert record.span_id == seen["span_id"]
 
     def test_log_outside_a_span_has_no_trace_context(self) -> None:
-        init_observability(api_key="it_test_demo", instrument_fastapi=False)
+        init_observability(
+            ai_only=False, api_key="it_test_demo", instrument_fastapi=False
+        )
         exporter = capture_logs()
 
         logging.getLogger("product").info("no span here")
@@ -147,7 +155,9 @@ class TestLogBridge:
         assert emitted(exporter, "no span here").log_record.trace_id == 0
 
     def test_debug_records_are_not_shipped(self) -> None:
-        init_observability(api_key="it_test_demo", instrument_fastapi=False)
+        init_observability(
+            ai_only=False, api_key="it_test_demo", instrument_fastapi=False
+        )
         exporter = capture_logs()
 
         product = logging.getLogger("chatty.product")
@@ -165,7 +175,9 @@ class TestLogBridge:
     def test_export_path_logs_are_not_shipped(self, noisy_logger: str) -> None:
         """Shipping these would feed a loop: a failed export logs an error,
         which becomes another record to export, which fails..."""
-        init_observability(api_key="it_test_demo", instrument_fastapi=False)
+        init_observability(
+            ai_only=False, api_key="it_test_demo", instrument_fastapi=False
+        )
         exporter = capture_logs()
 
         logging.getLogger(noisy_logger).warning("export failed")
@@ -178,7 +190,9 @@ class TestLogBridge:
 
         An operator who wants the SDK's diagnostics must still get them.
         """
-        init_observability(api_key="it_test_demo", instrument_fastapi=False)
+        init_observability(
+            ai_only=False, api_key="it_test_demo", instrument_fastapi=False
+        )
 
         seen: list[str] = []
 
@@ -201,7 +215,9 @@ class TestLogBridge:
         """Otherwise every test in the session accumulates another handler."""
         before = len(logging.getLogger().handlers)
 
-        init_observability(api_key="it_test_demo", instrument_fastapi=False)
+        init_observability(
+            ai_only=False, api_key="it_test_demo", instrument_fastapi=False
+        )
         assert len(logging.getLogger().handlers) == before + 1
 
         _reset_for_tests()
@@ -218,7 +234,9 @@ class TestRootLoggerLevel:
         original = root.level
         try:
             root.setLevel(logging.WARNING)
-            init_observability(api_key="it_test_demo", instrument_fastapi=False)
+            init_observability(
+                ai_only=False, api_key="it_test_demo", instrument_fastapi=False
+            )
             assert root.level == logging.WARNING, "init changed the app's log level"
         finally:
             root.setLevel(original)
@@ -229,7 +247,9 @@ class TestRootLoggerLevel:
         original = root.level
         try:
             root.setLevel(logging.WARNING)
-            init_observability(api_key="it_test_demo", instrument_fastapi=False)
+            init_observability(
+                ai_only=False, api_key="it_test_demo", instrument_fastapi=False
+            )
             exporter = capture_logs()
 
             # A fresh logger name with no level of its own, so it inherits root.
@@ -245,7 +265,10 @@ class TestRootLoggerLevel:
         try:
             root.setLevel(logging.WARNING)
             init_observability(
-                api_key="it_test_demo", instrument_fastapi=False, log_level="INFO"
+                ai_only=False,
+                api_key="it_test_demo",
+                instrument_fastapi=False,
+                log_level="INFO",
             )
             exporter = capture_logs()
 
@@ -262,6 +285,7 @@ class TestRootLoggerLevel:
         try:
             root.setLevel(logging.WARNING)
             init_observability(
+                ai_only=False,
                 api_key="it_test_demo",
                 instrument_fastapi=False,
                 log_level=logging.DEBUG,
@@ -276,7 +300,9 @@ class TestRootLoggerLevel:
     @pytest.mark.usefixtures("app_logs_at_info")
     def test_an_app_configured_at_info_ships_its_logs_with_no_argument(self) -> None:
         """The common case — `basicConfig(level=INFO)`, uvicorn, gunicorn."""
-        init_observability(api_key="it_test_demo", instrument_fastapi=False)
+        init_observability(
+            ai_only=False, api_key="it_test_demo", instrument_fastapi=False
+        )
         exporter = capture_logs()
 
         logging.getLogger("product").info("shipped")
@@ -288,6 +314,7 @@ class TestRootLoggerLevel:
 class TestResourceOnLogsAndMetrics:
     def test_logs_carry_every_required_resource_attribute(self) -> None:
         init_observability(
+            ai_only=False,
             api_key=TEST_API_KEY,
             service_name="compliance-api",
             service_version="1.4.2",
@@ -312,6 +339,7 @@ class TestResourceOnLogsAndMetrics:
     def test_metrics_carry_every_required_resource_attribute(self) -> None:
         """Assert on exported metric data, not just the provider's resource."""
         init_observability(
+            ai_only=False,
             api_key=TEST_API_KEY,
             service_name="compliance-api",
             instrument_fastapi=False,
@@ -341,7 +369,10 @@ class TestResourceOnLogsAndMetrics:
 
     def test_all_three_providers_share_one_resource(self) -> None:
         init_observability(
-            api_key=TEST_API_KEY, service_name="shared", instrument_fastapi=False
+            ai_only=False,
+            api_key=TEST_API_KEY,
+            service_name="shared",
+            instrument_fastapi=False,
         )
 
         tracer_provider = _get_provider()
@@ -365,7 +396,9 @@ class TestFailSilentAcrossAllSignals:
     """ADR 0003, now with three exporters that can each fail."""
 
     def test_bogus_endpoint_does_not_raise(self) -> None:
-        init_observability(api_key="it_test_demo", instrument_fastapi=False)
+        init_observability(
+            ai_only=False, api_key="it_test_demo", instrument_fastapi=False
+        )
 
         assert _get_provider() is not None
         # Every signal exercised against a dead collector; the caller never knows.
@@ -388,7 +421,9 @@ class TestFailSilentAcrossAllSignals:
 
         monkeypatch.setattr(f"indratrace.init.{exporter_name}", boom)
 
-        init_observability(api_key="it_test_demo", instrument_fastapi=False)
+        init_observability(
+            ai_only=False, api_key="it_test_demo", instrument_fastapi=False
+        )
 
         assert len(sdk_warnings(sdk_log)) == 1, "exactly one warning, per the spec"
         # A partial init leaves nothing marked initialized, so a retry is possible.
@@ -404,7 +439,9 @@ class TestFailSilentAcrossAllSignals:
         Shutdown drains all three serially, so an exporter that ignored our
         pinned timeout would hang process exit for 30s.
         """
-        init_observability(api_key="it_test_demo", instrument_fastapi=False)
+        init_observability(
+            ai_only=False, api_key="it_test_demo", instrument_fastapi=False
+        )
 
         # Queue something on each signal, so every exporter has work to flush.
         trace_agent("shutdown")(lambda: None)()
